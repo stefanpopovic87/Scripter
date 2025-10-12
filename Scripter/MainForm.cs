@@ -19,6 +19,11 @@ namespace Scripter
 		private FolderBrowserDialog folderDialog = new FolderBrowserDialog();
 		private ImageList statusImages;
 
+		// loader overlay
+		private Panel overlayPanel;
+		private Label overlayLabel;
+		private ProgressBar overlayProgress;
+
 		// Layout constants (tight spacing)
 		private const int GapYSmall = 0;
 		private const int GapY = 1;
@@ -195,7 +200,7 @@ namespace Scripter
 				ImageAlign = ContentAlignment.MiddleLeft,
 				TextAlign = ContentAlignment.MiddleRight
 			};
-			btnLoad.Click += (s, e) => LoadScripts(showMessage: true);
+			btnLoad.Click += async (s, e) => await LoadScriptsAsync(showMessage: true);
 
 			btnRun = new Button
 			{
@@ -208,7 +213,7 @@ namespace Scripter
 				ImageAlign = ContentAlignment.MiddleLeft,
 				TextAlign = ContentAlignment.MiddleRight
 			};
-			btnRun.Click += (s, e) => RunPending();
+			btnRun.Click += async (s, e) => await RunPendingAsync();
 
 			actions.Controls.AddRange(new Control[] { btnLoad, btnRun });
 
@@ -256,7 +261,6 @@ namespace Scripter
 			statusImages.Images.Add("pending", GetIcon("pending", 20));
 			statusImages.Images.Add("error", GetIcon("error", 20));
 
-			// centriraj ikonicu
 			list.DrawColumnHeader += (s, e) => e.DrawDefault = true;
 			list.DrawSubItem += (s, e) =>
 			{
@@ -276,13 +280,62 @@ namespace Scripter
 				}
 			};
 
+			// loader overlay over the list
+			overlayPanel = new Panel
+			{
+				Dock = DockStyle.Fill,
+				Visible = false,
+				BackColor = Color.FromArgb(160, SystemColors.ControlLightLight)
+			};
+
+			var overlayContainer = new TableLayoutPanel
+			{
+				Dock = DockStyle.Fill,
+				ColumnCount = 1,
+				RowCount = 2
+			};
+			overlayContainer.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+			overlayContainer.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+
+			var inner = new FlowLayoutPanel
+			{
+				FlowDirection = FlowDirection.TopDown,
+				AutoSize = true,
+				AutoSizeMode = AutoSizeMode.GrowAndShrink,
+				Anchor = AnchorStyles.None,
+				Padding = new Padding(12)
+			};
+
+			overlayLabel = new Label
+			{
+				Text = "Working...",
+				AutoSize = true,
+				Font = new Font("Segoe UI", 10, FontStyle.Regular),
+				TextAlign = ContentAlignment.MiddleCenter
+			};
+
+			overlayProgress = new ProgressBar
+			{
+				Style = ProgressBarStyle.Marquee,
+				MarqueeAnimationSpeed = 35,
+				Width = 240
+			};
+
+			inner.Controls.Add(overlayLabel);
+			inner.Controls.Add(overlayProgress);
+
+			overlayContainer.Controls.Add(new Panel()); // spacer
+			overlayContainer.Controls.Add(inner);
+
+			overlayPanel.Controls.Add(overlayContainer);
+			list.Controls.Add(overlayPanel); // sits above items
+
 			return list;
 		}
 
+		// ---------- Actions (async) ----------
 
-		// ---------- Actions ----------
-
-		private void LoadScripts(bool showMessage)
+		private async Task LoadScriptsAsync(bool showMessage)
 		{
 			lvScripts.Items.Clear();
 			btnRun.Enabled = false;
@@ -293,36 +346,50 @@ namespace Scripter
 				return;
 			}
 
+			ShowLoader("Loading scripts...");
+			btnLoad.Enabled = false;
+			btnRun.Enabled = false;
+
 			try
 			{
-				var baseFolder = Path.GetFullPath(txtScriptsFolder.Text);
-				var basePrefix = baseFolder.EndsWith(Path.DirectorySeparatorChar.ToString())
-					? baseFolder
-					: baseFolder + Path.DirectorySeparatorChar;
+				string connStr = txtConnectionString.Text;
+				string baseFolder = Path.GetFullPath(txtScriptsFolder.Text);
+				string basePrefix = baseFolder.EndsWith(Path.DirectorySeparatorChar.ToString()) ? baseFolder : baseFolder + Path.DirectorySeparatorChar;
 
-				var upgrader =
-					DeployChanges.To
-						.SqlDatabase(txtConnectionString.Text)
-						.WithScripts(new FullPathFileSystemScriptProvider(
-							baseFolder,
-							pattern: "*.sql",
-							includeSubdirs: true,
-							sortBy: ScriptSortBy.CreatedUtc))
-						.JournalTo(new CustomJournal("scripts", "DbMigrationHistory", baseFolder, txtConnectionString.Text))
-						.LogTo(BuildLogger())
-						.Build();
+				var (executedRows, pendingFiles) = await Task.Run(() =>
+				{
+					var upgrader =
+						DeployChanges.To
+							.SqlDatabase(connStr)
+							.WithScripts(new FullPathFileSystemScriptProvider(
+								baseFolder,
+								pattern: "*.sql",
+								includeSubdirs: true,
+								sortBy: ScriptSortBy.CreatedUtc))
+							.JournalTo(new CustomJournal("scripts", "DbMigrationHistory", baseFolder, connStr))
+							.LogTo(BuildLogger())
+							.Build();
 
-				_ = upgrader.GetExecutedScripts(); // ensure journal table exists
+					_ = upgrader.GetExecutedScripts();
 
-				var executedRows = FetchExecutedRows(baseFolder, basePrefix);
+					var executedRowsLocal = FetchExecutedRows(baseFolder, basePrefix);
 
-				var executedKeys = executedRows
-					.Select(r => ScriptKey.Make(r.Path, r.ScriptName))
-					.ToHashSet(StringComparer.OrdinalIgnoreCase);
+					var executedKeys = executedRowsLocal
+						.Select(r => ScriptKey.Make(r.Path, r.ScriptName))
+						.ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-				var pendingScripts = upgrader.GetScriptsToExecute().ToList();
+					var pendingScripts = upgrader.GetScriptsToExecute().ToList();
 
-				// Executed (oldest → newest)
+					var pendingFilesLocal = pendingScripts
+						.OrderBy(s => GetScriptFileTimeUtc(s.Name))
+						.ThenBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
+						.Where(s => !executedKeys.Contains(s.Name))
+						.Select(s => ScriptKey.Split(s.Name).file)
+						.ToList();
+
+					return (executedRowsLocal, pendingFilesLocal);
+				});
+
 				foreach (var row in executedRows
 					.OrderBy(r => r.Applied ?? DateTime.MaxValue)
 					.ThenBy(r => r.ScriptName, StringComparer.OrdinalIgnoreCase))
@@ -334,115 +401,121 @@ namespace Scripter
 					lvScripts.Items.Add(item);
 				}
 
-				// Pending (by file time, then by name)
-				int pendingCount = 0;
-				foreach (var s in pendingScripts
-					.OrderBy(s => GetScriptFileTimeUtc(s.Name))
-					.ThenBy(s => s.Name, StringComparer.OrdinalIgnoreCase))
+				foreach (var file in pendingFiles)
 				{
-					if (!executedKeys.Contains(s.Name))
-					{
-						var (_, file) = ScriptKey.Split(s.Name);
-						var item = new ListViewItem { ImageKey = "pending", Text = "" };
-						item.SubItems.Add(file);
-						item.SubItems.Add("");
-						item.SubItems.Add("Pending");
-						lvScripts.Items.Add(item);
-						pendingCount++;
-					}
+					var item = new ListViewItem { ImageKey = "pending", Text = "" };
+					item.SubItems.Add(file);
+					item.SubItems.Add("");
+					item.SubItems.Add("Pending");
+					lvScripts.Items.Add(item);
 				}
 
-				SetStatus(executedRows.Count, pendingCount);
-				btnRun.Enabled = pendingCount > 0;
+				SetStatus(executedRows.Count, pendingFiles.Count);
+				btnRun.Enabled = pendingFiles.Count > 0;
 
 				if (showMessage)
-					MessageBox.Show($"Loaded.\nExecuted: {executedRows.Count}\nPending: {pendingCount}", "Scripts loaded");
+					MessageBox.Show($"Loaded.\nExecuted: {executedRows.Count}\nPending: {pendingFiles.Count}", "Scripts loaded");
 			}
 			catch (Exception ex)
 			{
 				ShowError("Error", ex);
+			}
+			finally
+			{
+				HideLoader();
+				btnLoad.Enabled = true;
 			}
 		}
 
-		private void RunPending()
+		private async Task RunPendingAsync()
 		{
+			if (!Directory.Exists(txtScriptsFolder.Text))
+			{
+				MessageBox.Show("Folder not found.");
+				return;
+			}
+
+			ShowLoader("Running scripts...");
+			btnLoad.Enabled = false;
+			btnRun.Enabled = false;
+
 			try
 			{
-				var basePath = txtScriptsFolder.Text;
+				string connStr = txtConnectionString.Text;
+				string basePath = txtScriptsFolder.Text;
 
-				var probe =
-					DeployChanges.To
-						.SqlDatabase(txtConnectionString.Text)
-						.WithScripts(new FullPathFileSystemScriptProvider(
-							basePath,
-							"*.sql",
-							includeSubdirs: true,
-							sortBy: ScriptSortBy.CreatedUtc))
-						.JournalTo(new CustomJournal("scripts", "DbMigrationHistory", basePath, txtConnectionString.Text))
-						.LogTo(BuildLogger())
-						.Build();
-
-				var pendingAll = probe.GetScriptsToExecute().ToList();
-
-				var pendingSorted = pendingAll
-					.OrderBy(s => GetScriptFileTimeUtc(s.Name))
-					.ThenBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
-					.ToList();
-
-				if (pendingSorted.Count == 0)
+				var (success, errorFile, error) = await Task.Run(() =>
 				{
-					MessageBox.Show("No pending scripts.", "Info");
-					return;
-				}
-
-				foreach (var script in pendingSorted)
-				{
-					var singleRunner =
+					var probe =
 						DeployChanges.To
-							.SqlDatabase(txtConnectionString.Text)
-							.WithScripts(new[] { script })
-							.JournalTo(new CustomJournal("scripts", "DbMigrationHistory", basePath, txtConnectionString.Text))
+							.SqlDatabase(connStr)
+							.WithScripts(new FullPathFileSystemScriptProvider(
+								basePath,
+								"*.sql",
+								includeSubdirs: true,
+								sortBy: ScriptSortBy.CreatedUtc))
+							.JournalTo(new CustomJournal("scripts", "DbMigrationHistory", basePath, connStr))
 							.LogTo(BuildLogger())
 							.Build();
 
-					var res = singleRunner.PerformUpgrade();
+					var pendingAll = probe.GetScriptsToExecute().ToList();
 
-					if (!res.Successful)
-					{
-						var key = res.ErrorScript?.Name;
-						var (_, file) = ScriptKey.Split(key ?? "");
-						LoadScripts(showMessage: false);
-						MarkErrorRow(file, res.Error?.Message);
+					var pendingSorted = pendingAll
+						.OrderBy(s => GetScriptFileTimeUtc(s.Name))
+						.ThenBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
+						.ToList();
 
-						var header = !string.IsNullOrEmpty(file)
-							? $"Failed while executing script:\r\n{file}\r\n\r\n"
-							: "Execution failed.\r\n\r\n";
-						ShowError("Execution error", res.Error!, header);
-						return;
-					}
-					else
+					if (pendingSorted.Count == 0)
+						return (true, (string?)null, (Exception?)null);
+
+					foreach (var script in pendingSorted)
 					{
-						var (_, file) = ScriptKey.Split(script.Name);
-						foreach (ListViewItem it in lvScripts.Items)
+						var singleRunner =
+							DeployChanges.To
+								.SqlDatabase(connStr)
+								.WithScripts(new[] { script })
+								.JournalTo(new CustomJournal("scripts", "DbMigrationHistory", basePath, connStr))
+								.LogTo(BuildLogger())
+								.Build();
+
+						var res = singleRunner.PerformUpgrade();
+						if (!res.Successful)
 						{
-							if (string.Equals(it.SubItems[1].Text, file, StringComparison.OrdinalIgnoreCase))
-							{
-								it.ImageKey = "executed";
-								it.SubItems[2].Text = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss");
-								it.SubItems[3].Text = "Executed";
-								it.ForeColor = SystemColors.WindowText;
-								break;
-							}
+							var key = res.ErrorScript?.Name;
+							var (_, file) = ScriptKey.Split(key ?? "");
+							return (false, file, res.Error);
 						}
 					}
+
+					return (true, (string?)null, (Exception?)null);
+				});
+
+				if (!success)
+				{
+					await LoadScriptsAsync(showMessage: false);
+					if (!string.IsNullOrEmpty(errorFile))
+						MarkErrorRow(errorFile!, error?.Message);
+
+					var header = !string.IsNullOrEmpty(errorFile)
+						? $"Failed while executing script:\r\n{errorFile}\r\n\r\n"
+						: "Execution failed.\r\n\r\n";
+
+					ShowError("Execution error", error!, header);
+					return;
 				}
 
 				MessageBox.Show("All pending scripts executed successfully.", "Success");
-				LoadScripts(showMessage: false);
+				await LoadScriptsAsync(showMessage: false);
 			}
 			catch (Exception ex)
 			{
 				ShowError("Error", ex);
+			}
+			finally
+			{
+				HideLoader();
+				btnLoad.Enabled = true;
+				btnRun.Enabled = true;
 			}
 		}
 
@@ -593,6 +666,21 @@ namespace Scripter
 				_iconCache[key] = scaled;
 				return scaled;
 			}
+		}
+
+		// loader helpers
+		private void ShowLoader(string text)
+		{
+			overlayLabel.Text = text;
+			overlayPanel.Visible = true;
+			overlayPanel.BringToFront();
+			overlayProgress.Style = ProgressBarStyle.Marquee;
+		}
+
+		private void HideLoader()
+		{
+			overlayProgress.Style = ProgressBarStyle.Blocks;
+			overlayPanel.Visible = false;
 		}
 	}
 }
