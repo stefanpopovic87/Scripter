@@ -9,20 +9,20 @@ namespace Scripter
 	public class MainForm : Form
 	{
 		// UI
-		private TextBox txtConnectionString;
-		private TextBox txtScriptsFolder;
-		private Button btnBrowse;
-		private Button btnLoad;
-		private Button btnRun;
-		private ListView lvScripts;
+		private TextBox txtConnectionString = null!;
+		private TextBox txtScriptsFolder = null!;
+		private Button btnBrowse = null!;
+		private Button btnLoad = null!;
+		private Button btnRun = null!;
+		private ListView lvScripts = null!;
 		private Label lblStatus;
-		private FolderBrowserDialog folderDialog = new FolderBrowserDialog();
-		private ImageList statusImages;
+		private FolderBrowserDialog folderDialog = new();
+		private ImageList statusImages = null!;
 
 		// loader overlay
-		private Panel overlayPanel;
-		private Label overlayLabel;
-		private ProgressBar overlayProgress;
+		private Panel overlayPanel = null!;
+		private Label overlayLabel = null!;
+		private ProgressBar overlayProgress = null!;
 
 		// Layout constants (tight spacing)
 		private const int GapYSmall = 0;
@@ -264,7 +264,7 @@ namespace Scripter
 			list.DrawColumnHeader += (s, e) => e.DrawDefault = true;
 			list.DrawSubItem += (s, e) =>
 			{
-				if (e.ColumnIndex == 0 && e.Item.ImageList != null)
+				if (e.ColumnIndex == 0 && e.Item?.ImageList != null)
 				{
 					var img = e.Item.ImageList.Images[e.Item.ImageKey];
 					if (img != null)
