@@ -24,7 +24,7 @@
 				BorderStyle = BorderStyle.None,
 				Font = new Font("Consolas", 10f, FontStyle.Regular),
 				BackColor = Color.White,
-				ForeColor = Color.FromArgb(139, 0, 0),
+				ForeColor = Color.Red,
 				WordWrap = false,
 				DetectUrls = true,
 				ScrollBars = RichTextBoxScrollBars.Both,

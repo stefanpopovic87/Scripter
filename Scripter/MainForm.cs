@@ -27,6 +27,9 @@ namespace Scripter
 		// Cached logo
 		private Image? _logoImage;
 
+		// icon cache
+		private readonly Dictionary<string, Image> _iconCache = new(StringComparer.OrdinalIgnoreCase);
+
 		public MainForm()
 		{
 			Text = "";
@@ -52,7 +55,6 @@ namespace Scripter
 				AutoEllipsis = false,
 				Text = "Ready."
 			};
-
 
 			Controls.Add(lvScripts); // Fill
 			Controls.Add(inputs);    // Top (below header)
@@ -155,7 +157,11 @@ namespace Scripter
 				Text = "Browse",
 				AutoSize = true,
 				AutoSizeMode = AutoSizeMode.GrowAndShrink,
-				Margin = Padding.Empty
+				Margin = Padding.Empty,
+				Image = GetIcon("browse", 18),
+				TextImageRelation = TextImageRelation.ImageBeforeText,
+				ImageAlign = ContentAlignment.MiddleLeft,
+				TextAlign = ContentAlignment.MiddleRight
 			};
 			btnBrowse.Click += (s, e) =>
 			{
@@ -184,7 +190,7 @@ namespace Scripter
 				AutoSize = true,
 				AutoSizeMode = AutoSizeMode.GrowAndShrink,
 				Margin = new Padding(0, 0, 8, 0),
-				Image = DrawEmoji("🔄", Brushes.RoyalBlue, 17),
+				Image = GetIcon("refresh", 18),
 				TextImageRelation = TextImageRelation.ImageBeforeText,
 				ImageAlign = ContentAlignment.MiddleLeft,
 				TextAlign = ContentAlignment.MiddleRight
@@ -197,7 +203,7 @@ namespace Scripter
 				AutoSize = true,
 				AutoSizeMode = AutoSizeMode.GrowAndShrink,
 				Enabled = false,
-				Image = DrawEmoji("▶️", Brushes.ForestGreen, 17),
+				Image = GetIcon("play", 18),
 				TextImageRelation = TextImageRelation.ImageBeforeText,
 				ImageAlign = ContentAlignment.MiddleLeft,
 				TextAlign = ContentAlignment.MiddleRight
@@ -230,7 +236,8 @@ namespace Scripter
 				View = View.Details,
 				FullRowSelect = true,
 				GridLines = true,
-				Font = new Font("Segoe UI", 10f, FontStyle.Regular)
+				Font = new Font("Segoe UI", 10f, FontStyle.Regular),
+				OwnerDraw = true
 			};
 
 			list.Columns.Add("", 28, HorizontalAlignment.Center);
@@ -238,26 +245,40 @@ namespace Scripter
 			list.Columns.Add("Applied", 180, HorizontalAlignment.Left);
 			list.Columns.Add("Status", 120, HorizontalAlignment.Left);
 
-			list.Resize += (s, e) =>
+			list.SmallImageList = new ImageList
 			{
-				int w = list.ClientSize.Width;
-				const int iconW = 28, appliedW = 180, statusW = 120;
-				int scriptW = Math.Max(200, w - iconW - appliedW - statusW - 4);
-
-				list.Columns[0].Width = iconW;
-				list.Columns[1].Width = scriptW;
-				list.Columns[2].Width = appliedW;
-				list.Columns[3].Width = statusW;
+				ImageSize = new Size(20, 20),
+				ColorDepth = ColorDepth.Depth32Bit
 			};
 
-			statusImages = new ImageList { ImageSize = new Size(24, 24), ColorDepth = ColorDepth.Depth32Bit };
-			statusImages.Images.Add("executed", DrawEmoji("✔", Brushes.ForestGreen, 24));
-			statusImages.Images.Add("pending", DrawEmoji("🕓", Brushes.DarkOrange, 24));
-			statusImages.Images.Add("error", DrawEmoji("⛔", Brushes.DarkRed, 24));
-			list.SmallImageList = statusImages;
+			statusImages = list.SmallImageList;
+			statusImages.Images.Add("executed", GetIcon("executed", 20));
+			statusImages.Images.Add("pending", GetIcon("pending", 20));
+			statusImages.Images.Add("error", GetIcon("error", 20));
+
+			// centriraj ikonicu
+			list.DrawColumnHeader += (s, e) => e.DrawDefault = true;
+			list.DrawSubItem += (s, e) =>
+			{
+				if (e.ColumnIndex == 0 && e.Item.ImageList != null)
+				{
+					var img = e.Item.ImageList.Images[e.Item.ImageKey];
+					if (img != null)
+					{
+						int x = e.Bounds.X + (e.Bounds.Width - img.Width) / 2;
+						int y = e.Bounds.Y + (e.Bounds.Height - img.Height) / 2;
+						e.Graphics.DrawImage(img, x, y, img.Width, img.Height);
+					}
+				}
+				else
+				{
+					e.DrawText(TextFormatFlags.Left);
+				}
+			};
 
 			return list;
 		}
+
 
 		// ---------- Actions ----------
 
@@ -493,7 +514,7 @@ namespace Scripter
 				if (string.Equals(it.SubItems[1].Text, fileNameOnly, StringComparison.OrdinalIgnoreCase))
 				{
 					it.ImageKey = "error";
-					it.ForeColor = Color.DarkRed;
+					it.ForeColor = Color.Red;
 					if (it.SubItems.Count >= 4)
 						it.SubItems[3].Text = "Error";
 					if (!string.IsNullOrWhiteSpace(errorText))
@@ -520,24 +541,8 @@ namespace Scripter
 
 		// ---------- Utilities ----------
 
-		private static Bitmap DrawEmoji(string symbol, Brush color, int size = 24)
-		{
-			var bmp = new Bitmap(size, size);
-			using var g = Graphics.FromImage(bmp);
-			g.Clear(Color.Transparent);
-
-			using var f = new Font("Segoe UI Emoji", size * 0.9f, FontStyle.Regular, GraphicsUnit.Pixel);
-			var rect = new RectangleF(0, 0, size, size);
-			var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-
-			g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
-			g.DrawString(symbol, f, color, rect, sf);
-			return bmp;
-		}
-
 		private static Image? LoadLogoPng()
 		{
-			// Try embedded resource first: "<Namespace>.Resources.scripter-logo.png"
 			try
 			{
 				var asm = Assembly.GetExecutingAssembly();
@@ -548,7 +553,6 @@ namespace Scripter
 			}
 			catch { }
 
-			// Fallback to physical file: /Resources/scripter-logo.png next to the exe
 			try
 			{
 				var path = Path.Combine(AppContext.BaseDirectory, "Resources", "scripter-logo.png");
@@ -557,6 +561,38 @@ namespace Scripter
 			catch { }
 
 			return null;
+		}
+
+		private Image GetIcon(string name, int size)
+		{
+			string key = $"{name}@{size}";
+			if (_iconCache.TryGetValue(key, out var existing))
+				return existing;
+
+			Stream? stream = null;
+
+			var asm = Assembly.GetExecutingAssembly();
+			string ns = typeof(MainForm).Namespace ?? "Scripter";
+			string resource = $"{ns}.Resources.icons.{name}.png";
+			stream = asm.GetManifestResourceStream(resource);
+
+			if (stream == null)
+			{
+				string path = Path.Combine(AppContext.BaseDirectory, "Resources", "icons", $"{name}.png");
+				if (File.Exists(path))
+					stream = File.OpenRead(path);
+			}
+
+			if (stream == null)
+				throw new FileNotFoundException($"Icon not found: {name}.png");
+
+			using (stream)
+			using (var img = Image.FromStream(stream))
+			{
+				var scaled = new Bitmap(img, new Size(size, size));
+				_iconCache[key] = scaled;
+				return scaled;
+			}
 		}
 	}
 }

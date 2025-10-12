@@ -19,7 +19,21 @@
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 		</None>
 	</ItemGroup>
+
 	<ItemGroup>
+	  <None Remove="Resources\icons\browse.png" />
+	  <None Remove="Resources\icons\error.png" />
+	  <None Remove="Resources\icons\executed.png" />
+	  <None Remove="Resources\icons\play.png" />
+	  <None Remove="Resources\icons\refresh.png" />
+	</ItemGroup>
+	<ItemGroup>
+	  <EmbeddedResource Include="Resources\icons\browse.png" />
+	  <EmbeddedResource Include="Resources\icons\error.png" />
+	  <EmbeddedResource Include="Resources\icons\executed.png" />
+	  <EmbeddedResource Include="Resources\icons\play.png" />
+	  <EmbeddedResource Include="Resources\icons\refresh.png" />
+	  <EmbeddedResource Include="Resources\icons\pending.png" />
 	  <EmbeddedResource Include="Resources\scripter-logo.png" />
 	</ItemGroup>
 </Project>
