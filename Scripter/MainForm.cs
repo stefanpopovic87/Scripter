@@ -15,14 +15,22 @@ namespace Scripter
 		private Button btnLoad = null!;
 		private Button btnRun = null!;
 		private ListView lvScripts = null!;
+		private ListView lvHistory = null!;
+		private Button btnHistoryRefresh = null!;
 		private Label lblStatus;
 		private FolderBrowserDialog folderDialog = new();
 		private ImageList statusImages = null!;
 
-		// loader overlay
+		// loader overlay (Scripts tab)
 		private Panel overlayPanel = null!;
 		private Label overlayLabel = null!;
 		private ProgressBar overlayProgress = null!;
+
+		// loader overlay (History tab)
+		private Panel overlayHistoryPanel = null!;
+		private Panel scriptsTopSpacer = null!;
+		private Label overlayHistoryLabel = null!;
+		private ProgressBar overlayHistoryProgress = null!;
 
 		// Layout constants (tight spacing)
 		private const int GapYSmall = 0;
@@ -40,16 +48,23 @@ namespace Scripter
 			Text = "";
 			StartPosition = FormStartPosition.CenterScreen;
 			Width = 900;
-			Height = 600;
+			Height = 900;
 			AutoScaleMode = AutoScaleMode.Dpi;
 
 			ShowIcon = false;
 			Icon = null;
 
-			// Build UI
 			var header = CreateHeaderPanel();
 			var inputs = CreateInputsPanel();
-			lvScripts = CreateListView();
+
+			// Tabs
+			var tabs = new TabControl
+			{
+				Dock = DockStyle.Fill
+			};
+			tabs.TabPages.Add(CreateScriptsTab());
+			tabs.TabPages.Add(CreateHistoryTab());
+
 			lblStatus = new Label
 			{
 				Dock = DockStyle.Bottom,
@@ -61,9 +76,9 @@ namespace Scripter
 				Text = "Ready."
 			};
 
-			Controls.Add(lvScripts); // Fill
-			Controls.Add(inputs);    // Top (below header)
-			Controls.Add(header);    // Top (with logo)
+			Controls.Add(tabs);    // Fill (tabs host both tables)
+			Controls.Add(inputs);  // Top
+			Controls.Add(header);  // Top
 			Controls.Add(lblStatus); // Bottom
 		}
 
@@ -126,7 +141,6 @@ namespace Scripter
 			panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 			panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-			// Row 1: Connection string
 			var lblConn = new Label
 			{
 				Text = "Connection string:",
@@ -142,7 +156,6 @@ namespace Scripter
 				Text = "Data Source=localhost; Initial Catalog=Aleacc; User Id=sa; Password=Password1*; TrustServerCertificate=True"
 			};
 
-			// Row 2: Scripts folder + Browse
 			var lblFolder = new Label
 			{
 				Text = "Scripts folder:",
@@ -178,7 +191,6 @@ namespace Scripter
 					txtScriptsFolder.Text = folderDialog.SelectedPath;
 			};
 
-			// Row 3: Actions
 			var actions = new FlowLayoutPanel
 			{
 				FlowDirection = FlowDirection.LeftToRight,
@@ -217,7 +229,6 @@ namespace Scripter
 
 			actions.Controls.AddRange(new Control[] { btnLoad, btnRun });
 
-			// Compose rows
 			panel.Controls.Add(lblConn, 0, 0);
 			panel.Controls.Add(txtConnectionString, 1, 0);
 			panel.Controls.Add(new Panel { Width = 1, Margin = Padding.Empty }, 2, 0);
@@ -233,9 +244,11 @@ namespace Scripter
 			return panel;
 		}
 
-		private ListView CreateListView()
+		private TabPage CreateScriptsTab()
 		{
-			var list = new ListView
+			var page = new TabPage("Scripts") { Padding = new Padding(3) };
+
+			lvScripts = new ListView
 			{
 				Dock = DockStyle.Fill,
 				View = View.Details,
@@ -245,24 +258,19 @@ namespace Scripter
 				OwnerDraw = true
 			};
 
-			list.Columns.Add("", 28, HorizontalAlignment.Center);
-			list.Columns.Add("Script Name", 480, HorizontalAlignment.Left);
-			list.Columns.Add("Applied", 220, HorizontalAlignment.Left);
-			list.Columns.Add("Status", 120, HorizontalAlignment.Left);
+			lvScripts.Columns.Add("", 40, HorizontalAlignment.Center);
+			lvScripts.Columns.Add("Script Name", 480, HorizontalAlignment.Left);
+			lvScripts.Columns.Add("Applied", 220, HorizontalAlignment.Left);
+			lvScripts.Columns.Add("Status", 120, HorizontalAlignment.Left);
 
-			list.SmallImageList = new ImageList
-			{
-				ImageSize = new Size(20, 20),
-				ColorDepth = ColorDepth.Depth32Bit
-			};
-
-			statusImages = list.SmallImageList;
+			lvScripts.SmallImageList = new ImageList { ImageSize = new Size(20, 20), ColorDepth = ColorDepth.Depth32Bit };
+			statusImages = lvScripts.SmallImageList;
 			statusImages.Images.Add("executed", GetIcon("executed", 20));
 			statusImages.Images.Add("pending", GetIcon("pending", 20));
 			statusImages.Images.Add("error", GetIcon("error", 20));
 
-			list.DrawColumnHeader += (s, e) => e.DrawDefault = true;
-			list.DrawSubItem += (s, e) =>
+			lvScripts.DrawColumnHeader += (s, e) => e.DrawDefault = true;
+			lvScripts.DrawSubItem += (s, e) =>
 			{
 				if (e.ColumnIndex == 0 && e.Item?.ImageList != null)
 				{
@@ -280,33 +288,100 @@ namespace Scripter
 				}
 			};
 
-			// loader overlay over the list
-			overlayPanel = new Panel
+			// overlay for Scripts
+			overlayPanel = BuildOverlay(out overlayLabel, out overlayProgress);
+			lvScripts.Controls.Add(overlayPanel);
+
+			var host = new Panel { Dock = DockStyle.Fill };
+
+			scriptsTopSpacer = new Panel { Dock = DockStyle.Top, Height = 48 };
+
+			host.Controls.Add(lvScripts);
+			host.Controls.Add(scriptsTopSpacer); // Top
+
+			page.Controls.Add(host);
+			return page;
+		}
+
+		private TabPage CreateHistoryTab()
+		{
+			var page = new TabPage("History") { Padding = new Padding(3) };
+
+			var layout = new TableLayoutPanel
+			{
+				Dock = DockStyle.Fill,
+				ColumnCount = 2,
+				RowCount = 2
+			};
+			layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+			layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+			layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+			layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+			btnHistoryRefresh = new Button
+			{
+				Text = "Refresh",
+				AutoSize = true,
+				Image = GetIcon("refresh", 18),
+				TextImageRelation = TextImageRelation.ImageBeforeText,
+				Margin = new Padding(3, 3, 3, 6)
+			};
+			btnHistoryRefresh.Click += async (s, e) => await LoadHistoryAsync();
+
+			var spacer = new Panel { Dock = DockStyle.Fill, Height = btnHistoryRefresh.Height };
+
+			lvHistory = new ListView
+			{
+				Dock = DockStyle.Fill,
+				View = View.Details,
+				FullRowSelect = true,
+				GridLines = true,
+				Font = new Font("Segoe UI", 10f, FontStyle.Regular)
+			};
+			lvHistory.Columns.Add("Id", 40, HorizontalAlignment.Left);
+			lvHistory.Columns.Add("Script Name", 480, HorizontalAlignment.Left);
+			lvHistory.Columns.Add("Applied", 220, HorizontalAlignment.Left);
+			lvHistory.Columns.Add("Executed By", 140, HorizontalAlignment.Left);
+			lvHistory.Columns.Add("Machine", 180, HorizontalAlignment.Left);
+			lvHistory.Columns.Add("Path", 640, HorizontalAlignment.Left);
+
+			overlayHistoryPanel = BuildOverlay(out overlayHistoryLabel, out overlayHistoryProgress);
+			lvHistory.Controls.Add(overlayHistoryPanel);
+
+			layout.Controls.Add(spacer, 0, 0);
+			layout.Controls.Add(btnHistoryRefresh, 1, 0);
+			layout.Controls.Add(lvHistory, 0, 1);
+			layout.SetColumnSpan(lvHistory, 2);
+
+			page.Controls.Add(layout);
+			page.Enter += async (s, e) =>
+			{
+				if (lvHistory.Items.Count == 0)
+					await LoadHistoryAsync();
+			};
+
+			return page;
+		}
+
+		private Panel BuildOverlay(out Label label, out ProgressBar bar)
+		{
+			var panel = new Panel
 			{
 				Dock = DockStyle.Fill,
 				Visible = false,
 				BackColor = Color.FromArgb(160, SystemColors.ControlLightLight)
 			};
 
-			var overlayContainer = new TableLayoutPanel
-			{
-				Dock = DockStyle.Fill,
-				ColumnCount = 1,
-				RowCount = 2
-			};
-			overlayContainer.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-			overlayContainer.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-
-			var inner = new FlowLayoutPanel
+			var center = new FlowLayoutPanel
 			{
 				FlowDirection = FlowDirection.TopDown,
 				AutoSize = true,
 				AutoSizeMode = AutoSizeMode.GrowAndShrink,
 				Anchor = AnchorStyles.None,
-				Padding = new Padding(12)
+				Padding = new Padding(16)
 			};
 
-			overlayLabel = new Label
+			label = new Label
 			{
 				Text = "Working...",
 				AutoSize = true,
@@ -314,23 +389,27 @@ namespace Scripter
 				TextAlign = ContentAlignment.MiddleCenter
 			};
 
-			overlayProgress = new ProgressBar
+			bar = new ProgressBar
 			{
 				Style = ProgressBarStyle.Marquee,
 				MarqueeAnimationSpeed = 35,
-				Width = 240
+				Width = 260
 			};
 
-			inner.Controls.Add(overlayLabel);
-			inner.Controls.Add(overlayProgress);
+			center.Controls.Add(label);
+			center.Controls.Add(bar);
 
-			overlayContainer.Controls.Add(new Panel()); // spacer
-			overlayContainer.Controls.Add(inner);
+			var filler = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 3 };
+			filler.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+			filler.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+			filler.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+			filler.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+			filler.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+			filler.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+			filler.Controls.Add(center, 1, 1);
 
-			overlayPanel.Controls.Add(overlayContainer);
-			list.Controls.Add(overlayPanel); // sits above items
-
-			return list;
+			panel.Controls.Add(filler);
+			return panel;
 		}
 
 		// ---------- Actions (async) ----------
@@ -519,6 +598,63 @@ namespace Scripter
 			}
 		}
 
+		private async Task LoadHistoryAsync()
+		{
+			lvHistory.Items.Clear();
+			ShowHistoryLoader("Loading history...");
+
+			try
+			{
+				string connStr = txtConnectionString.Text;
+
+				var rows = await Task.Run(() =>
+				{
+					var list = new List<(string Id, string Script, DateTime AppliedUtc, string? By, string? Machine, string? Path)>();
+					using var conn = new SqlConnection(connStr);
+					conn.Open();
+					using var cmd = conn.CreateCommand();
+					cmd.CommandText = @"
+						SELECT [Id],[ScriptName],[Applied],[ExecutedBy],[MachineName],[Path]
+						FROM [scripts].[DbMigrationHistory]";
+					using var r = cmd.ExecuteReader();
+					while (r.Read())
+					{
+						var id = r.IsDBNull(0) ? "" : (r.GetValue(0)?.ToString() ?? "");
+						var script = r.IsDBNull(1) ? "" : r.GetString(1);
+						var applied = r.IsDBNull(2) ? DateTime.MinValue : r.GetDateTime(2).ToUniversalTime();
+						var by = r.IsDBNull(3) ? null : r.GetString(3);
+						var machine = r.IsDBNull(4) ? null : r.GetString(4);
+						var path = r.IsDBNull(5) ? null : r.GetString(5);
+
+						list.Add((id, script, applied, by, machine, path));
+					}
+					return list
+						.OrderByDescending(x => x.AppliedUtc)
+						.ThenBy(x => x.Script, StringComparer.OrdinalIgnoreCase)
+						.ToList();
+				});
+
+				foreach (var row in rows)
+				{
+					var it = new ListViewItem(row.Id);
+					it.SubItems.Add(row.Script);
+					it.SubItems.Add(row.AppliedUtc == DateTime.MinValue ? "" : row.AppliedUtc.ToString("yyyy-MM-dd HH:mm:ss"));
+					it.SubItems.Add(row.By ?? "");
+					it.SubItems.Add(row.Machine ?? "");
+					it.SubItems.Add(row.Path ?? "");
+					lvHistory.Items.Add(it);
+				}
+			}
+			catch (Exception ex)
+			{
+				ShowError("Error loading history", ex);
+			}
+			finally
+			{
+				HideHistoryLoader();
+			}
+		}
+
 		// ---------- Infrastructure ----------
 
 		private IUpgradeLog BuildLogger() => new WinFormsLog(this);
@@ -668,7 +804,7 @@ namespace Scripter
 			}
 		}
 
-		// loader helpers
+		// loaders
 		private void ShowLoader(string text)
 		{
 			overlayLabel.Text = text;
@@ -676,11 +812,23 @@ namespace Scripter
 			overlayPanel.BringToFront();
 			overlayProgress.Style = ProgressBarStyle.Marquee;
 		}
-
 		private void HideLoader()
 		{
 			overlayProgress.Style = ProgressBarStyle.Blocks;
 			overlayPanel.Visible = false;
+		}
+
+		private void ShowHistoryLoader(string text)
+		{
+			overlayHistoryLabel.Text = text;
+			overlayHistoryPanel.Visible = true;
+			overlayHistoryPanel.BringToFront();
+			overlayHistoryProgress.Style = ProgressBarStyle.Marquee;
+		}
+		private void HideHistoryLoader()
+		{
+			overlayHistoryProgress.Style = ProgressBarStyle.Blocks;
+			overlayHistoryPanel.Visible = false;
 		}
 	}
 }
