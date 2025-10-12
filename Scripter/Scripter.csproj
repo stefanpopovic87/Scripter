@@ -1,0 +1,25 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+	<PropertyGroup>
+		<OutputType>WinExe</OutputType>
+		<TargetFramework>net8.0-windows</TargetFramework>
+		<UseWindowsForms>true</UseWindowsForms>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<AssemblyName>Scripter</AssemblyName>
+		<Nullable>enable</Nullable>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<PackageReference Include="DbUp" Version="5.0.41" />
+		<PackageReference Include="Microsoft.Data.SqlClient" Version="6.1.2" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<None Include="..\Scripts\**\*.sql">
+			<Link>Scripts\%(RecursiveDir)%(Filename)%(Extension)</Link>
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
+	</ItemGroup>
+	<ItemGroup>
+	  <EmbeddedResource Include="Resources\scripter-logo.png" />
+	</ItemGroup>
+</Project>
