@@ -246,8 +246,8 @@ namespace Scripter
 			};
 
 			list.Columns.Add("", 28, HorizontalAlignment.Center);
-			list.Columns.Add("Script Name", 520, HorizontalAlignment.Left);
-			list.Columns.Add("Applied", 180, HorizontalAlignment.Left);
+			list.Columns.Add("Script Name", 480, HorizontalAlignment.Left);
+			list.Columns.Add("Applied", 220, HorizontalAlignment.Left);
 			list.Columns.Add("Status", 120, HorizontalAlignment.Left);
 
 			list.SmallImageList = new ImageList
@@ -414,7 +414,7 @@ namespace Scripter
 				btnRun.Enabled = pendingFiles.Count > 0;
 
 				if (showMessage)
-					MessageBox.Show($"Loaded.\nExecuted: {executedRows.Count}\nPending: {pendingFiles.Count}", "Scripts loaded");
+					MessageBox.Show($"Executed: {executedRows.Count}\nPending: {pendingFiles.Count}", "Scripts loaded");
 			}
 			catch (Exception ex)
 			{
