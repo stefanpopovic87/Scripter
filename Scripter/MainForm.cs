@@ -32,6 +32,12 @@ namespace Scripter
 		private Label overlayHistoryLabel = null!;
 		private ProgressBar overlayHistoryProgress = null!;
 
+		// hover preview
+		private readonly ToolTip ttScripts = new() { InitialDelay = 200, ReshowDelay = 100, AutoPopDelay = 15000, UseAnimation = true, UseFading = true, ShowAlways = false };
+		private readonly ToolTip ttHistory = new() { InitialDelay = 200, ReshowDelay = 100, AutoPopDelay = 15000, UseAnimation = true, UseFading = true, ShowAlways = false };
+		private ListViewItem? _lastTipItemScripts;
+		private ListViewItem? _lastTipItemHistory;
+
 		// Layout constants (tight spacing)
 		private const int GapYSmall = 0;
 		private const int GapY = 1;
@@ -43,12 +49,16 @@ namespace Scripter
 		// icon cache
 		private readonly Dictionary<string, Image> _iconCache = new(StringComparer.OrdinalIgnoreCase);
 
+		// cursor state
+		private bool _scriptsHandCursor = false;
+		private bool _historyHandCursor = false;
+
 		public MainForm()
 		{
 			Text = "";
 			StartPosition = FormStartPosition.CenterScreen;
-			Width = 900;
-			Height = 900;
+			Width = 920;
+			Height = 1000;
 			AutoScaleMode = AutoScaleMode.Dpi;
 
 			ShowIcon = false;
@@ -58,10 +68,7 @@ namespace Scripter
 			var inputs = CreateInputsPanel();
 
 			// Tabs
-			var tabs = new TabControl
-			{
-				Dock = DockStyle.Fill
-			};
+			var tabs = new TabControl { Dock = DockStyle.Fill };
 			tabs.TabPages.Add(CreateScriptsTab());
 			tabs.TabPages.Add(CreateHistoryTab());
 
@@ -259,9 +266,9 @@ namespace Scripter
 			};
 
 			lvScripts.Columns.Add("", 40, HorizontalAlignment.Center);
-			lvScripts.Columns.Add("Script Name", 480, HorizontalAlignment.Left);
-			lvScripts.Columns.Add("Applied", 220, HorizontalAlignment.Left);
-			lvScripts.Columns.Add("Status", 120, HorizontalAlignment.Left);
+			lvScripts.Columns.Add("Script Name", 440, HorizontalAlignment.Left);
+			lvScripts.Columns.Add("Applied", 240, HorizontalAlignment.Left);
+			lvScripts.Columns.Add("Status", 160, HorizontalAlignment.Left);
 
 			lvScripts.SmallImageList = new ImageList { ImageSize = new Size(20, 20), ColorDepth = ColorDepth.Depth32Bit };
 			statusImages = lvScripts.SmallImageList;
@@ -269,7 +276,10 @@ namespace Scripter
 			statusImages.Images.Add("pending", GetIcon("pending", 20));
 			statusImages.Images.Add("error", GetIcon("error", 20));
 
+			// headers default
 			lvScripts.DrawColumnHeader += (s, e) => e.DrawDefault = true;
+
+			// custom draw for: icon column centered + script name plav (bez underline)
 			lvScripts.DrawSubItem += (s, e) =>
 			{
 				if (e.ColumnIndex == 0 && e.Item?.ImageList != null)
@@ -282,10 +292,67 @@ namespace Scripter
 						e.Graphics.DrawImage(img, x, y, img.Width, img.Height);
 					}
 				}
+				else if (e.ColumnIndex == 1)
+				{
+					TextRenderer.DrawText(
+						e.Graphics,
+						e.SubItem.Text,
+						e.SubItem.Font!, // regular
+						e.Bounds,
+						Color.RoyalBlue,
+						TextFormatFlags.Left | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
+				}
 				else
 				{
-					e.DrawText(TextFormatFlags.Left);
+					e.DrawText(TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
 				}
+			};
+
+			// hover hand + preview tooltip
+			lvScripts.MouseMove += (s, e) =>
+			{
+				var hit = lvScripts.HitTest(e.Location);
+				bool onName = hit.Item != null && hit.SubItem != null && hit.Item.SubItems.IndexOf(hit.SubItem) == 1;
+				if (onName != _scriptsHandCursor)
+				{
+					_scriptsHandCursor = onName;
+					lvScripts.Cursor = onName ? Cursors.Hand : Cursors.Default;
+				}
+
+				// tooltip samo kada smo na novom itemu
+				if (onName && hit.Item != null && !ReferenceEquals(_lastTipItemScripts, hit.Item))
+				{
+					_lastTipItemScripts = hit.Item;
+					string fileName = hit.Item.SubItems[1].Text;
+					string preview = GetPreviewTextByName(fileName);
+					if (!string.IsNullOrEmpty(preview))
+					{
+						ttScripts.Show(preview, lvScripts, e.Location + new Size(16, 20), 15000);
+					}
+				}
+			};
+			lvScripts.MouseLeave += (s, e) =>
+			{
+				_scriptsHandCursor = false;
+				lvScripts.Cursor = Cursors.Default;
+				_lastTipItemScripts = null;
+				ttScripts.Hide(lvScripts);
+			};
+
+			// open modal on click Script Name
+			lvScripts.MouseUp += async (s, e) =>
+			{
+				if (e.Button != MouseButtons.Left) return;
+				var hit = lvScripts.HitTest(e.Location);
+				if (hit.Item == null || hit.SubItem == null) return;
+				if (hit.Item.SubItems.IndexOf(hit.SubItem) != 1) return; // only "Script Name"
+
+				string fileName = hit.Item.SubItems[1].Text;
+				string title = fileName;
+				string content = await Task.Run(() => GetScriptContentByNameOrFile(fileName));
+
+				using var dlg = new ScriptViewerForm(title, content);
+				dlg.ShowDialog(this);
 			};
 
 			// overlay for Scripts
@@ -293,7 +360,6 @@ namespace Scripter
 			lvScripts.Controls.Add(overlayPanel);
 
 			var host = new Panel { Dock = DockStyle.Fill };
-
 			scriptsTopSpacer = new Panel { Dock = DockStyle.Top, Height = 48 };
 
 			host.Controls.Add(lvScripts);
@@ -336,17 +402,84 @@ namespace Scripter
 				View = View.Details,
 				FullRowSelect = true,
 				GridLines = true,
-				Font = new Font("Segoe UI", 10f, FontStyle.Regular)
+				Font = new Font("Segoe UI", 10f, FontStyle.Regular),
+				OwnerDraw = true
 			};
-			lvHistory.Columns.Add("Id", 40, HorizontalAlignment.Left);
-			lvHistory.Columns.Add("Script Name", 480, HorizontalAlignment.Left);
-			lvHistory.Columns.Add("Applied", 220, HorizontalAlignment.Left);
+			lvHistory.Columns.Add("Id", 100, HorizontalAlignment.Left);
+			lvHistory.Columns.Add("Script Name", 440, HorizontalAlignment.Left);
+			lvHistory.Columns.Add("Applied", 240, HorizontalAlignment.Left);
 			lvHistory.Columns.Add("Executed By", 140, HorizontalAlignment.Left);
 			lvHistory.Columns.Add("Machine", 180, HorizontalAlignment.Left);
 			lvHistory.Columns.Add("Path", 640, HorizontalAlignment.Left);
 
 			overlayHistoryPanel = BuildOverlay(out overlayHistoryLabel, out overlayHistoryProgress);
 			lvHistory.Controls.Add(overlayHistoryPanel);
+
+			// custom draw: plav tekst za Script Name
+			lvHistory.DrawColumnHeader += (s, e) => e.DrawDefault = true;
+			lvHistory.DrawSubItem += (s, e) =>
+			{
+				if (e.ColumnIndex == 1)
+				{
+					TextRenderer.DrawText(
+						e.Graphics,
+						e.SubItem.Text,
+						e.SubItem.Font!,
+						e.Bounds,
+						Color.RoyalBlue,
+						TextFormatFlags.Left | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
+				}
+				else
+				{
+					e.DrawText(TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+				}
+			};
+
+			// hover hand + tooltip preview
+			lvHistory.MouseMove += (s, e) =>
+			{
+				var hit = lvHistory.HitTest(e.Location);
+				bool onName = hit.Item != null && hit.SubItem != null && hit.Item.SubItems.IndexOf(hit.SubItem) == 1;
+				if (onName != _historyHandCursor)
+				{
+					_historyHandCursor = onName;
+					lvHistory.Cursor = onName ? Cursors.Hand : Cursors.Default;
+				}
+
+				if (onName && hit.Item != null && !ReferenceEquals(_lastTipItemHistory, hit.Item))
+				{
+					_lastTipItemHistory = hit.Item;
+					int id = int.TryParse(hit.Item.SubItems[0].Text, out var v) ? v : 0;
+					string preview = GetPreviewTextById(id);
+					if (!string.IsNullOrEmpty(preview))
+					{
+						ttHistory.Show(preview, lvHistory, e.Location + new Size(16, 20), 15000);
+					}
+				}
+			};
+			lvHistory.MouseLeave += (s, e) =>
+			{
+				_historyHandCursor = false;
+				lvHistory.Cursor = Cursors.Default;
+				_lastTipItemHistory = null;
+				ttHistory.Hide(lvHistory);
+			};
+
+			// open modal on click Script Name
+			lvHistory.MouseUp += (s, e) =>
+			{
+				if (e.Button != MouseButtons.Left) return;
+				var hit = lvHistory.HitTest(e.Location);
+				if (hit.Item == null || hit.SubItem == null) return;
+				if (hit.Item.SubItems.IndexOf(hit.SubItem) != 1) return; // only "Script Name"
+
+				int id = int.TryParse(hit.Item.SubItems[0].Text, out var v) ? v : 0;
+				string title = hit.Item.SubItems[1].Text;
+				string sql = GetScriptContentById(id);
+
+				using var dlg = new ScriptViewerForm(title, sql);
+				dlg.ShowDialog(this);
+			};
 
 			layout.Controls.Add(spacer, 0, 0);
 			layout.Controls.Add(btnHistoryRefresh, 1, 0);
@@ -636,7 +769,7 @@ namespace Scripter
 
 				foreach (var row in rows)
 				{
-					var it = new ListViewItem(row.Id);
+					var it = new ListViewItem { Text = row.Id, UseItemStyleForSubItems = false };
 					it.SubItems.Add(row.Script);
 					it.SubItems.Add(row.AppliedUtc == DateTime.MinValue ? "" : row.AppliedUtc.ToString("yyyy-MM-dd HH:mm:ss"));
 					it.SubItems.Add(row.By ?? "");
@@ -830,5 +963,72 @@ namespace Scripter
 			overlayHistoryProgress.Style = ProgressBarStyle.Blocks;
 			overlayHistoryPanel.Visible = false;
 		}
+
+		// ---------- Content helpers ----------
+		private string GetScriptContentById(int id)
+		{
+			if (id <= 0) return string.Empty;
+			try
+			{
+				using var conn = new SqlConnection(txtConnectionString.Text);
+				conn.Open();
+				using var cmd = conn.CreateCommand();
+				cmd.CommandText = "SELECT [Content] FROM [scripts].[DbMigrationHistory] WHERE [Id]=@id";
+				cmd.Parameters.Add(new SqlParameter("@id", id));
+				var o = cmd.ExecuteScalar();
+				return o as string ?? string.Empty;
+			}
+			catch { return string.Empty; }
+		}
+
+		private string GetScriptContentByNameOrFile(string fileName)
+		{
+			try
+			{
+				using var conn = new SqlConnection(txtConnectionString.Text);
+				conn.Open();
+				using var cmd = conn.CreateCommand();
+				cmd.CommandText = @"
+					SELECT TOP(1) [Content]
+					FROM [scripts].[DbMigrationHistory]
+					WHERE [ScriptName] = @name AND (@path = '' OR [Path] LIKE @path + '%')
+					ORDER BY [Applied] DESC";
+				cmd.Parameters.Add(new SqlParameter("@name", fileName));
+				string baseFolder = "";
+				try { baseFolder = Path.GetFullPath(txtScriptsFolder.Text ?? ""); } catch { }
+				cmd.Parameters.Add(new SqlParameter("@path", baseFolder ?? string.Empty));
+				var o = cmd.ExecuteScalar();
+				var content = o as string;
+				if (!string.IsNullOrEmpty(content)) return content!;
+			}
+			catch { /* ignore and fallback */ }
+
+			// 2) fallback: pronađi fajl na disku (rekurzivno)
+			try
+			{
+				var root = txtScriptsFolder.Text;
+				if (!string.IsNullOrWhiteSpace(root) && Directory.Exists(root))
+				{
+					var matches = Directory.GetFiles(root, fileName, SearchOption.AllDirectories);
+					var full = matches.FirstOrDefault();
+					if (!string.IsNullOrEmpty(full))
+						return File.ReadAllText(full);
+				}
+			}
+			catch { }
+
+			return string.Empty;
+		}
+
+		private static string NormalizePreview(string? sql, int maxLen = 1000)
+		{
+			if (string.IsNullOrEmpty(sql)) return string.Empty;
+			string s = sql!;
+			if (s.Length > maxLen) s = s.Substring(0, maxLen) + " …";
+			return s.Trim();
+		}
+
+		private string GetPreviewTextById(int id) => NormalizePreview(GetScriptContentById(id));
+		private string GetPreviewTextByName(string fileName) => NormalizePreview(GetScriptContentByNameOrFile(fileName));
 	}
 }
