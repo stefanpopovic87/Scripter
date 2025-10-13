@@ -296,8 +296,8 @@ namespace Scripter
 				{
 					TextRenderer.DrawText(
 						e.Graphics,
-						e.SubItem.Text,
-						e.SubItem.Font!, // regular
+						e.SubItem?.Text,
+						e.SubItem?.Font!, // regular
 						e.Bounds,
 						Color.RoyalBlue,
 						TextFormatFlags.Left | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
@@ -423,8 +423,8 @@ namespace Scripter
 				{
 					TextRenderer.DrawText(
 						e.Graphics,
-						e.SubItem.Text,
-						e.SubItem.Font!,
+						e.SubItem?.Text,
+						e.SubItem?.Font!,
 						e.Bounds,
 						Color.RoyalBlue,
 						TextFormatFlags.Left | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
