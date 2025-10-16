@@ -42,10 +42,16 @@ namespace Scripter.UI.Forms
 
 		// Selection state (Scripts)
 		private bool _scriptsSelectAll;
-		private bool _hasPendingScripts; // Added: track if any pending scripts exist
+		private bool _hasPendingScripts;
 		private Image _imgExecuted = null!;
 		private Image _imgPending = null!;
 		private Image _imgError = null!;
+
+		// Sorting state
+		private int _scriptsSortColumn = -1;
+		private bool _scriptsSortAscending = true;
+		private int _historySortColumn = -1;
+		private bool _historySortAscending = true;
 
 		private sealed class ScriptRowTag
 		{
@@ -101,7 +107,7 @@ namespace Scripter.UI.Forms
 		{
 			var raw = txtScriptsFolder?.Text;
 			if (string.IsNullOrWhiteSpace(raw))
-				return ""; // signal "not set"
+				return "";
 			return Path.GetFullPath(raw);
 		}
 
@@ -245,12 +251,6 @@ namespace Scripter.UI.Forms
 				OwnerDraw = true
 			};
 
-			// Columns:
-			// 0: Select checkbox header
-			// 1: Icon
-			// 2: Script Name
-			// 3: Applied
-			// 4: Status
 			lvScripts.Columns.Add("Select", 54);
 			lvScripts.Columns.Add("", 40);
 			lvScripts.Columns.Add("Script Name", 440);
@@ -288,37 +288,115 @@ namespace Scripter.UI.Forms
 				return;
 			}
 
-			e.Graphics.FillRectangle(SystemBrushes.Control, e.Bounds);
-			Rectangle cb = new(
-				e.Bounds.X + (e.Bounds.Width - 18) / 2,
-				e.Bounds.Y + (e.Bounds.Height - 16) / 2,
-				16,
-				16);
+			bool themed = Application.RenderWithVisualStyles &&
+						  VisualStyleRenderer.IsElementDefined(VisualStyleElement.Header.Item.Normal);
+			if (themed)
+			{
+				var renderer = new VisualStyleRenderer(VisualStyleElement.Header.Item.Normal);
+				renderer.DrawBackground(e.Graphics, e.Bounds);
+			}
+			else
+			{
+				e.Graphics.FillRectangle(SystemBrushes.Control, e.Bounds);
+				ControlPaint.DrawBorder(e.Graphics, e.Bounds, SystemColors.ControlDark, ButtonBorderStyle.Solid);
+			}
 
-			// Disabled header checkbox if no pending scripts.
-			var state = !_hasPendingScripts
+			bool enabled = _hasPendingScripts;
+			var state = !enabled
 				? (_scriptsSelectAll ? CheckBoxState.CheckedDisabled : CheckBoxState.UncheckedDisabled)
 				: (_scriptsSelectAll ? CheckBoxState.CheckedNormal : CheckBoxState.UncheckedNormal);
+
+			// Create (missing) rectangle for checkbox glyph
+			Size glyph = CheckBoxRenderer.GetGlyphSize(e.Graphics, state);
+			var cb = new Rectangle(
+				e.Bounds.X + (e.Bounds.Width - glyph.Width) / 2,
+				e.Bounds.Y + (e.Bounds.Height - glyph.Height) / 2,
+				glyph.Width,
+				glyph.Height);
+
 			CheckBoxRenderer.DrawCheckBox(e.Graphics, cb.Location, state);
 		}
 
+		// ColumnClick for scripts (sorting + select-all)
 		private void ScriptsHeaderClick(object? sender, ColumnClickEventArgs e)
 		{
-			if (e.Column != 0 || !_hasPendingScripts) return; // Ignore clicks when disabled
-			_scriptsSelectAll = !_scriptsSelectAll;
-			foreach (ListViewItem it in lvScripts.Items)
+			// Column 0: Select-All
+			if (e.Column == 0)
 			{
-				if (it.Tag is ScriptRowTag tag && tag.IsPending)
-					tag.Selected = _scriptsSelectAll;
+				if (!_hasPendingScripts) return;
+				_scriptsSelectAll = !_scriptsSelectAll;
+				foreach (ListViewItem it in lvScripts.Items)
+					if (it.Tag is ScriptRowTag tag && tag.IsPending)
+						tag.Selected = _scriptsSelectAll;
+				lvScripts.Invalidate();
+				return;
 			}
-			lvScripts.Invalidate();
+
+			// Ignore icon column (1)
+			if (e.Column == 1) return;
+
+			// Sorting (columns 2,3,4)
+			if (_scriptsSortColumn == e.Column)
+				_scriptsSortAscending = !_scriptsSortAscending;
+			else
+			{
+				_scriptsSortColumn = e.Column;
+				_scriptsSortAscending = true;
+			}
+			SortScripts();
+		}
+
+		private void SortScripts()
+		{
+			if (_scriptsSortColumn < 0) return;
+
+			var items = lvScripts.Items.Cast<ListViewItem>().ToList();
+			IEnumerable<ListViewItem> ordered = items;
+
+			switch (_scriptsSortColumn)
+			{
+				case 2: // Script Name
+					ordered = _scriptsSortAscending
+						? items.OrderBy(i => i.SubItems[2].Text, StringComparer.OrdinalIgnoreCase)
+						: items.OrderByDescending(i => i.SubItems[2].Text, StringComparer.OrdinalIgnoreCase);
+					break;
+
+				case 3: // Applied (date; pending blank -> DateTime.MaxValue in ascending)
+					DateTime GetApplied(ListViewItem it)
+					{
+						var t = it.SubItems[3].Text;
+						if (string.IsNullOrWhiteSpace(t)) return DateTime.MaxValue;
+						if (DateTime.TryParse(t, out var dt)) return dt;
+						return DateTime.MaxValue;
+					}
+					ordered = _scriptsSortAscending
+						? items.OrderBy(GetApplied).ThenBy(i => i.SubItems[2].Text, StringComparer.OrdinalIgnoreCase)
+						: items.OrderByDescending(GetApplied).ThenByDescending(i => i.SubItems[2].Text, StringComparer.OrdinalIgnoreCase);
+					break;
+
+				case 4: // Status custom rank
+					int Rank(ListViewItem it) => it.SubItems[4].Text.ToLowerInvariant() switch
+					{
+						"executed" => 0,
+						"pending" => 1,
+						"error" => 2,
+						_ => 99
+					};
+					ordered = _scriptsSortAscending
+						? items.OrderBy(Rank).ThenBy(i => i.SubItems[2].Text, StringComparer.OrdinalIgnoreCase)
+						: items.OrderByDescending(Rank).ThenByDescending(i => i.SubItems[2].Text, StringComparer.OrdinalIgnoreCase);
+					break;
+			}
+
+			lvScripts.BeginUpdate();
+			lvScripts.Items.Clear();
+			foreach (var it in ordered) lvScripts.Items.Add(it);
+			lvScripts.EndUpdate();
 		}
 
 		private void DrawScriptsSubItem(object? sender, DrawListViewSubItemEventArgs e)
 		{
 			var tag = e?.Item?.Tag as ScriptRowTag;
-
-			// Column 0: selection checkbox for pending
 			if (e?.ColumnIndex == 0)
 			{
 				e.Graphics.FillRectangle(SystemBrushes.Window, e.Bounds);
@@ -336,8 +414,6 @@ namespace Scripter.UI.Forms
 				}
 				return;
 			}
-
-			// Column 1: icon
 			if (e?.ColumnIndex == 1)
 			{
 				e.Graphics.FillRectangle(SystemBrushes.Window, e.Bounds);
@@ -359,8 +435,6 @@ namespace Scripter.UI.Forms
 				}
 				return;
 			}
-
-			// Column 2: Script Name (blue text)
 			if (e?.ColumnIndex == 2)
 			{
 				TextRenderer.DrawText(
@@ -372,8 +446,6 @@ namespace Scripter.UI.Forms
 					TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
 				return;
 			}
-
-			// Other columns: default text
 			e?.DrawText(TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
 		}
 
@@ -402,17 +474,13 @@ namespace Scripter.UI.Forms
 			var hit = lvScripts.HitTest(e.Location);
 			if (hit.Item == null || hit.SubItem == null) return;
 			int idx = hit.Item.SubItems.IndexOf(hit.SubItem);
-
-			// Toggle pending selection if first column clicked
 			if (idx == 0 && hit.Item.Tag is ScriptRowTag tag && tag.IsPending)
 			{
 				tag.Selected = !tag.Selected;
-				if (!tag.Selected) _scriptsSelectAll = false; // deselect header if any unchecked
+				if (!tag.Selected) _scriptsSelectAll = false;
 				lvScripts.Invalidate(hit.SubItem.Bounds);
 				return;
 			}
-
-			// Open viewer on script name column
 			if (e.Button == MouseButtons.Left && idx == 2)
 			{
 				string fileName = hit.Item.SubItems[2].Text;
@@ -476,6 +544,7 @@ namespace Scripter.UI.Forms
 			lvHistory.MouseMove += HistoryMouseMove;
 			lvHistory.MouseLeave += (s, e) => ResetHistoryHover();
 			lvHistory.MouseUp += HistoryMouseUp;
+			lvHistory.ColumnClick += HistoryHeaderClick;
 
 			overlayHistoryPanel = BuildOverlay(out overlayHistoryLabel, out overlayHistoryProgress);
 			lvHistory.Controls.Add(overlayHistoryPanel);
@@ -554,12 +623,71 @@ namespace Scripter.UI.Forms
 			ttHistory.Hide(lvHistory);
 		}
 
+		private void HistoryHeaderClick(object? sender, ColumnClickEventArgs e)
+		{
+			if (_historySortColumn == e.Column)
+				_historySortAscending = !_historySortAscending;
+			else
+			{
+				_historySortColumn = e.Column;
+				_historySortAscending = true;
+			}
+			SortHistory();
+		}
+
+		private void SortHistory()
+		{
+			if (_historySortColumn < 0) return;
+			var items = lvHistory.Items.Cast<ListViewItem>().ToList();
+			IEnumerable<ListViewItem> ordered = items;
+
+			switch (_historySortColumn)
+			{
+				case 0: // Id numeric
+					int GetId(ListViewItem it) => int.TryParse(it.SubItems[0].Text, out var v) ? v : int.MaxValue;
+					ordered = _historySortAscending ? items.OrderBy(GetId) : items.OrderByDescending(GetId);
+					break;
+				case 1: // Script Name
+					ordered = _historySortAscending
+						? items.OrderBy(i => i.SubItems[1].Text, StringComparer.OrdinalIgnoreCase)
+						: items.OrderByDescending(i => i.SubItems[1].Text, StringComparer.OrdinalIgnoreCase);
+					break;
+				case 2: // Applied date
+					DateTime GetApplied(ListViewItem it)
+					{
+						var t = it.SubItems[2].Text;
+						if (string.IsNullOrWhiteSpace(t)) return DateTime.MaxValue;
+						if (DateTime.TryParse(t, out var dt)) return dt;
+						return DateTime.MaxValue;
+					}
+					ordered = _historySortAscending
+						? items.OrderBy(GetApplied).ThenBy(i => i.SubItems[1].Text, StringComparer.OrdinalIgnoreCase)
+						: items.OrderByDescending(GetApplied).ThenByDescending(i => i.SubItems[1].Text, StringComparer.OrdinalIgnoreCase);
+					break;
+				case 3: // Executed By
+				case 4: // Machine
+				case 5: // Path
+					ordered = _historySortAscending
+						? items.OrderBy(i => i.SubItems[_historySortColumn].Text, StringComparer.OrdinalIgnoreCase)
+						: items.OrderByDescending(i => i.SubItems[_historySortColumn].Text, StringComparer.OrdinalIgnoreCase);
+					break;
+				default:
+					return;
+			}
+
+			lvHistory.BeginUpdate();
+			lvHistory.Items.Clear();
+			foreach (var it in ordered) lvHistory.Items.Add(it);
+			lvHistory.EndUpdate();
+		}
+
 		private async Task LoadScriptsAsync(bool showMessage)
 		{
 			lvScripts.Items.Clear();
 			btnRun.Enabled = false;
 			_scriptsSelectAll = false;
-			_hasPendingScripts = false; // reset pending tracking
+			_hasPendingScripts = false;
+			_scriptsSortColumn = -1;
 
 			if (!Directory.Exists(GetBaseFolder()))
 			{
@@ -584,13 +712,7 @@ namespace Scripter.UI.Forms
 					item.SubItems.Add(row.ScriptName);
 					item.SubItems.Add(row.Applied?.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "");
 					item.SubItems.Add("Executed");
-					item.Tag = new ScriptRowTag
-					{
-						IsPending = false,
-						Selected = false,
-						FileName = row.ScriptName,
-						Status = "Executed"
-					};
+					item.Tag = new ScriptRowTag { IsPending = false, Selected = false, FileName = row.ScriptName, Status = "Executed" };
 					lvScripts.Items.Add(item);
 				}
 
@@ -601,18 +723,12 @@ namespace Scripter.UI.Forms
 					item.SubItems.Add(file);
 					item.SubItems.Add("");
 					item.SubItems.Add("Pending");
-					item.Tag = new ScriptRowTag
-					{
-						IsPending = true,
-						Selected = false,
-						FileName = file,
-						Status = "Pending"
-					};
+					item.Tag = new ScriptRowTag { IsPending = true, Selected = false, FileName = file, Status = "Pending" };
 					lvScripts.Items.Add(item);
 				}
 
-				_hasPendingScripts = result.PendingFiles.Count > 0; // track availability
-				btnRun.Enabled = _hasPendingScripts; // only enable when pending exists
+				_hasPendingScripts = result.PendingFiles.Count > 0;
+				btnRun.Enabled = _hasPendingScripts;
 				SetStatus(result.Executed.Count, result.PendingFiles.Count);
 
 				if (showMessage)
@@ -626,7 +742,7 @@ namespace Scripter.UI.Forms
 			{
 				HideScriptsLoader();
 				btnLoad.Enabled = true;
-				lvScripts.Invalidate(); // redraw header (disabled checkbox state)
+				lvScripts.Invalidate();
 			}
 		}
 
@@ -637,13 +753,11 @@ namespace Scripter.UI.Forms
 				MessageBox.Show("Folder not found.");
 				return;
 			}
-
 			if (!_hasPendingScripts)
 			{
 				MessageBox.Show("No pending scripts available.", "Info");
 				return;
 			}
-
 			var selected = GetSelectedPendingScripts();
 			if (selected.Count == 0)
 			{
@@ -665,8 +779,7 @@ namespace Scripter.UI.Forms
 				MessageBoxIcon.Question,
 				MessageBoxDefaultButton.Button2);
 
-			if (answer != DialogResult.Yes)
-				return;
+			if (answer != DialogResult.Yes) return;
 
 			ShowScriptsLoader("Running scripts...");
 			btnLoad.Enabled = false;
@@ -704,7 +817,7 @@ namespace Scripter.UI.Forms
 			{
 				HideScriptsLoader();
 				btnLoad.Enabled = true;
-				btnRun.Enabled = _hasPendingScripts; // reflect current pending availability
+				btnRun.Enabled = _hasPendingScripts;
 			}
 		}
 
@@ -712,16 +825,15 @@ namespace Scripter.UI.Forms
 		{
 			var list = new List<string>();
 			foreach (ListViewItem it in lvScripts.Items)
-			{
 				if (it.Tag is ScriptRowTag tag && tag.IsPending && tag.Selected)
 					list.Add(tag.FileName);
-			}
 			return list;
 		}
 
 		private async Task LoadHistoryAsync()
 		{
 			lvHistory.Items.Clear();
+			_historySortColumn = -1;
 			ShowHistoryLoader("Loading history...");
 
 			try
