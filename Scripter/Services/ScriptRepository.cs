@@ -1,5 +1,6 @@
 using Microsoft.Data.SqlClient;
 using Scripter.Services;
+using System.Diagnostics;
 
 namespace Scripter
 {
@@ -129,6 +130,32 @@ namespace Scripter
 			if (t <= DateTime.MinValue.AddDays(1))
 				t = File.GetLastWriteTimeUtc(fullPath);
 			return t;
+		}
+
+		public async Task<DbTestResult> TestConnectionAsync()
+		{
+			string cs = _getConnectionString();
+			if (string.IsNullOrWhiteSpace(cs))
+				return new DbTestResult(false, null, null, null, 0, new ArgumentException("Empty connection string."));
+
+			try
+			{
+				var sw = Stopwatch.StartNew();
+				await using var conn = new SqlConnection(cs);
+				await conn.OpenAsync();
+				sw.Stop();
+				return new DbTestResult(
+					Success: true,
+					Server: conn.DataSource,
+					Database: conn.Database,
+					Version: conn.ServerVersion,
+					ElapsedMs: sw.ElapsedMilliseconds,
+					Error: null);
+			}
+			catch (Exception ex)
+			{
+				return new DbTestResult(false, null, null, null, 0, ex);
+			}
 		}
 	}
 }

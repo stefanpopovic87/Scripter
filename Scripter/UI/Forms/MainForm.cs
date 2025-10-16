@@ -11,6 +11,7 @@ namespace Scripter.UI.Forms
 		private Button btnBrowse = null!;
 		private Button btnLoad = null!;
 		private Button btnRun = null!;
+		private Button btnTestDb = null!;
 		private ListView lvScripts = null!;
 		private ListView lvHistory = null!;
 		private Button btnHistoryRefresh = null!;
@@ -121,9 +122,9 @@ namespace Scripter.UI.Forms
 			var header = new Panel
 			{
 				Dock = DockStyle.Top,
-				Height = 42,
-				Padding = new Padding(12, 6, 0, 0),
-				Margin = Padding.Empty
+				Height = 58,                    // increased overall height
+				Padding = new Padding(12, 14, 0, 12), // larger bottom padding for extra space under logo
+				Margin = new Padding(0, 0, 0, 12)    // larger external bottom margin before inputs
 			};
 
 			header.Paint += (s, e) =>
@@ -153,6 +154,7 @@ namespace Scripter.UI.Forms
 				Dock = DockStyle.Top,
 				AutoSize = true,
 				Padding = new Padding(4, 2, 4, 0),
+				Margin = new Padding(0, 0, 0, 2),  // smaller bottom margin before tabs
 				ColumnCount = 3
 			};
 			panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -161,9 +163,11 @@ namespace Scripter.UI.Forms
 
 			var lblConn = new Label
 			{
-				Text = "Connection string:",
+				Text = "Connection:",
+				AutoSize = true,
 				Anchor = AnchorStyles.Left,
-				Margin = new Padding(0, GapY, GapX, GapY)
+				Margin = new Padding(0, GapY, 2, GapY),
+				UseMnemonic = false
 			};
 			txtConnectionString = new TextBox
 			{
@@ -172,9 +176,20 @@ namespace Scripter.UI.Forms
 				Text = "Data Source=localhost; Initial Catalog=Aleacc; User Id=sa; Password=Password1*; TrustServerCertificate=True"
 			};
 
+			btnTestDb = new Button
+			{
+				Text = "Test",
+				AutoSize = true,
+				Image = _icons.Get("db-test", 18),
+				TextImageRelation = TextImageRelation.ImageBeforeText,
+				Margin = new Padding(0, GapYSmall, 0, GapYSmall)
+			};
+			btnTestDb.Click += async (s, e) => await TestDbAsync();
+
 			var lblFolder = new Label
 			{
 				Text = "Scripts folder:",
+				AutoSize = true,
 				Anchor = AnchorStyles.Left,
 				Margin = new Padding(0, GapY, GapX, GapY)
 			};
@@ -231,20 +246,22 @@ namespace Scripter.UI.Forms
 
 			panel.Controls.Add(lblConn, 0, 0);
 			panel.Controls.Add(txtConnectionString, 1, 0);
-			panel.Controls.Add(new Panel(), 2, 0);
+			panel.Controls.Add(btnTestDb, 2, 0);
 			panel.Controls.Add(lblFolder, 0, 1);
 			panel.Controls.Add(txtScriptsFolder, 1, 1);
 			panel.Controls.Add(btnBrowse, 2, 1);
-			panel.Controls.Add(new Panel(), 0, 2);
+			// Remove tall spacer effect: make a zero-height stub
+			var spacer = new Panel { Height = 0 };
+			panel.Controls.Add(spacer, 0, 2);
 			panel.Controls.Add(actions, 1, 2);
-			panel.Controls.Add(new Panel(), 2, 2);
+			// Skip filler in (2,2) to avoid extra vertical space
 
 			return panel;
 		}
 
 		private TabPage CreateScriptsTab()
 		{
-			var page = new TabPage("Scripts") { Padding = new Padding(3) };
+			var page = new TabPage("Scripts") { Padding = new Padding(3, 2, 3, 2) };
 
 			lvScripts = new ListView
 			{
@@ -505,7 +522,7 @@ namespace Scripter.UI.Forms
 
 		private TabPage CreateHistoryTab()
 		{
-			var page = new TabPage("History") { Padding = new Padding(3) };
+			var page = new TabPage("History") { Padding = new Padding(3, 2, 3, 2) };
 			var layout = new TableLayoutPanel
 			{
 				Dock = DockStyle.Fill,
@@ -813,9 +830,6 @@ namespace Scripter.UI.Forms
 
 				MessageBox.Show("Selected pending scripts executed successfully.", "Success");
 				await LoadScriptsAsync(false);
-
-				// Auto refresh History tab after running pending scripts
-				await LoadHistoryAsync();
 			}
 			catch (Exception ex)
 			{
@@ -1039,6 +1053,38 @@ namespace Scripter.UI.Forms
 					await RunPendingAsync();
 				return;
 			}
+
+			// Ctrl+T: test DB connection
+			if (e.Control && e.KeyCode == Keys.T)
+			{
+				e.SuppressKeyPress = true;
+				if (btnTestDb.Enabled)
+					await TestDbAsync();
+				return;
+			}
+		}
+
+		private async Task TestDbAsync()
+		{
+			var result = await _repository.TestConnectionAsync();
+			if (!result.Success)
+			{
+				MessageBox.Show(
+					$"Connection failed.\n\n{result.Error?.Message}",
+					"Test Database",
+					MessageBoxButtons.OK,
+					MessageBoxIcon.Error);
+				lblStatus.Text = "Database test failed.";
+				return;
+			}
+
+			MessageBox.Show(
+				$"Connection succeeded.\n\nServer: {result.Server}\nDatabase: {result.Database}\nVersion: {result.Version}\nLatency: {result.ElapsedMs} ms",
+				"Test Database",
+				MessageBoxButtons.OK,
+				MessageBoxIcon.Information);
+
+			lblStatus.Text = $"Database test succeeded. {result.Server}/{result.Database} ({result.ElapsedMs} ms)";
 		}
 	}
 }

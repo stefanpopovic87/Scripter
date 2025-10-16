@@ -1,3 +1,5 @@
+using Scripter.Services;
+
 namespace Scripter
 {
 	public interface IScriptRepository
@@ -7,6 +9,7 @@ namespace Scripter
 		string GetScriptContentById(int id);
 		string GetScriptContentByNameOrFile(string fileName);
 		DateTime GetScriptFileTimeUtc(string scriptKey);
+		Task<DbTestResult> TestConnectionAsync();
 	}
 
 	public sealed class ExecutedRow
