@@ -1,5 +1,8 @@
-﻿namespace Scripter
+﻿namespace Scripter.UI.Forms
 {
+	/// <summary>
+	/// Simple modal dialog for displaying error details with copy support.
+	/// </summary>
 	public sealed class ErrorDialog : Form
 	{
 		private readonly RichTextBox rtb;

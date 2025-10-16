@@ -1,7 +1,7 @@
 ﻿using DbUp.Engine;
 using DbUp.Engine.Transactions;
 
-namespace Scripter
+namespace Scripter.Services
 {
 	public enum ScriptSortBy { Name, CreatedUtc, ModifiedUtc }
 

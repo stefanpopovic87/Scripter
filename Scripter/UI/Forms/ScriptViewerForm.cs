@@ -1,4 +1,4 @@
-﻿namespace Scripter
+﻿namespace Scripter.UI.Forms
 {
 	public sealed class ScriptViewerForm : Form
 	{

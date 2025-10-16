@@ -1,3 +1,5 @@
+using Scripter.UI.Forms;
+
 namespace Scripter
 {
 	internal static class Program

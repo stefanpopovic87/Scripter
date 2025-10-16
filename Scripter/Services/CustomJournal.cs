@@ -3,7 +3,7 @@ using Microsoft.Data.SqlClient;
 using System.Data;
 using System.Text;
 
-namespace Scripter
+namespace Scripter.Services
 {
 	public class CustomJournal : IJournal
 	{
