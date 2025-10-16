@@ -66,6 +66,8 @@ namespace Scripter.UI.Forms
 		private const int GapY = 1;
 		private const int GapX = 6;
 
+		private TabControl _tabs = null!;
+
 		public MainForm()
 		{
 			Text = "";
@@ -84,9 +86,9 @@ namespace Scripter.UI.Forms
 			var header = CreateHeaderPanel();
 			var inputs = CreateInputsPanel();
 
-			var tabs = new TabControl { Dock = DockStyle.Fill };
-			tabs.TabPages.Add(CreateScriptsTab());
-			tabs.TabPages.Add(CreateHistoryTab());
+			_tabs = new TabControl { Dock = DockStyle.Fill };
+			_tabs.TabPages.Add(CreateScriptsTab());
+			_tabs.TabPages.Add(CreateHistoryTab());
 
 			lblStatus = new Label
 			{
@@ -96,10 +98,13 @@ namespace Scripter.UI.Forms
 				Text = "Ready."
 			};
 
-			Controls.Add(tabs);
+			Controls.Add(_tabs);
 			Controls.Add(inputs);
 			Controls.Add(header);
 			Controls.Add(lblStatus);
+
+			KeyPreview = true;
+			KeyDown += MainForm_KeyDown;
 		}
 
 		private string GetConnectionString() => txtConnectionString.Text;
@@ -967,6 +972,69 @@ namespace Scripter.UI.Forms
 					_form.Invoke(new Action(() => _form.lblStatus.Text = text));
 				else
 					_form.lblStatus.Text = text;
+			}
+		}
+
+		private void ToggleSelectAllScripts()
+		{
+			if (!_hasPendingScripts || lvScripts.Items.Count == 0) return;
+			_scriptsSelectAll = !_scriptsSelectAll;
+			foreach (ListViewItem it in lvScripts.Items)
+			{
+				if (it.Tag is ScriptRowTag tag && tag.IsPending)
+					tag.Selected = _scriptsSelectAll;
+			}
+			lvScripts.Invalidate(); // redraw header + checkboxes
+		}
+
+		private async void MainForm_KeyDown(object? sender, KeyEventArgs e)
+		{
+			// Esc: close
+			if (e.KeyCode == Keys.Escape)
+			{
+				e.SuppressKeyPress = true;
+				Close();
+				return;
+			}
+
+			// Ctrl+A: toggle select/unselect all pending scripts (Scripts tab only)
+			if (e.Control && e.KeyCode == Keys.A)
+			{
+				bool scriptsTabActive = _tabs.SelectedTab != null &&
+					string.Equals(_tabs.SelectedTab.Text, "Scripts", StringComparison.OrdinalIgnoreCase);
+				if (scriptsTabActive && _hasPendingScripts && lvScripts.Items.Count > 0)
+				{
+					e.SuppressKeyPress = true;
+					ToggleSelectAllScripts();
+					return;
+				}
+			}
+
+			// Ctrl+B: browse for folder
+			if (e.Control && e.KeyCode == Keys.B)
+			{
+				e.SuppressKeyPress = true;
+				if (btnBrowse.Enabled)
+					btnBrowse.PerformClick();
+				return;
+			}
+
+			// Ctrl+L: load scripts
+			if (e.Control && e.KeyCode == Keys.L)
+			{
+				e.SuppressKeyPress = true;
+				if (btnLoad.Enabled)
+					await LoadScriptsAsync(true);
+				return;
+			}
+
+			// Ctrl+R: run pending
+			if (e.Control && e.KeyCode == Keys.R)
+			{
+				e.SuppressKeyPress = true;
+				if (btnRun.Enabled)
+					await RunPendingAsync();
+				return;
 			}
 		}
 	}
