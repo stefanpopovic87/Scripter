@@ -813,6 +813,9 @@ namespace Scripter.UI.Forms
 
 				MessageBox.Show("Selected pending scripts executed successfully.", "Success");
 				await LoadScriptsAsync(false);
+
+				// Auto refresh History tab after running pending scripts
+				await LoadHistoryAsync();
 			}
 			catch (Exception ex)
 			{
