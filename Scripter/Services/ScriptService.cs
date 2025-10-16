@@ -43,8 +43,13 @@ namespace Scripter
 			return (executedRows, pendingFiles);
 		}
 
-		public async Task<(bool Success, string? ErrorFile, Exception? Error)> ExecutePendingAsync(string connectionString, string baseFolder, IUpgradeLog log)
+		public async Task<(bool Success, string? ErrorFile, Exception? Error)> ExecutePendingAsync(
+			string connectionString,
+			string baseFolder,
+			IUpgradeLog log,
+			IReadOnlyCollection<string> selectedFiles)
 		{
+			// Build provider of all pending scripts.
 			var probe =
 				DeployChanges.To
 					.SqlDatabase(connectionString)
@@ -59,6 +64,7 @@ namespace Scripter
 
 			var pendingAll = probe.GetScriptsToExecute().ToList();
 
+			// Order consistently (same as load).
 			var pendingSorted = pendingAll
 				.OrderBy(s => _repository.GetScriptFileTimeUtc(s.Name))
 				.ThenBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
@@ -67,7 +73,17 @@ namespace Scripter
 			if (pendingSorted.Count == 0)
 				return (true, null, null);
 
-			foreach (var script in pendingSorted)
+			// Filter to selected file names only.
+			var selectedSet = new HashSet<string>(selectedFiles ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+			var toRun = pendingSorted
+				.Where(s => selectedSet.Contains(ScriptKey.Split(s.Name).file))
+				.ToList();
+
+			// If user selected files but none match pending (possible race), treat as success.
+			if (toRun.Count == 0)
+				return (true, null, null);
+
+			foreach (var script in toRun)
 			{
 				var runner =
 					DeployChanges.To

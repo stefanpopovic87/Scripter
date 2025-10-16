@@ -42,6 +42,7 @@ namespace Scripter.UI.Forms
 
 		// Selection state (Scripts)
 		private bool _scriptsSelectAll;
+		private bool _hasPendingScripts; // Added: track if any pending scripts exist
 		private Image _imgExecuted = null!;
 		private Image _imgPending = null!;
 		private Image _imgError = null!;
@@ -293,15 +294,17 @@ namespace Scripter.UI.Forms
 				e.Bounds.Y + (e.Bounds.Height - 16) / 2,
 				16,
 				16);
-			CheckBoxRenderer.DrawCheckBox(
-				e.Graphics,
-				cb.Location,
-				_scriptsSelectAll ? CheckBoxState.CheckedNormal : CheckBoxState.UncheckedNormal);
+
+			// Disabled header checkbox if no pending scripts.
+			var state = !_hasPendingScripts
+				? (_scriptsSelectAll ? CheckBoxState.CheckedDisabled : CheckBoxState.UncheckedDisabled)
+				: (_scriptsSelectAll ? CheckBoxState.CheckedNormal : CheckBoxState.UncheckedNormal);
+			CheckBoxRenderer.DrawCheckBox(e.Graphics, cb.Location, state);
 		}
 
 		private void ScriptsHeaderClick(object? sender, ColumnClickEventArgs e)
 		{
-			if (e.Column != 0) return;
+			if (e.Column != 0 || !_hasPendingScripts) return; // Ignore clicks when disabled
 			_scriptsSelectAll = !_scriptsSelectAll;
 			foreach (ListViewItem it in lvScripts.Items)
 			{
@@ -358,7 +361,7 @@ namespace Scripter.UI.Forms
 			}
 
 			// Column 2: Script Name (blue text)
-			if (e.ColumnIndex == 2)
+			if (e?.ColumnIndex == 2)
 			{
 				TextRenderer.DrawText(
 					e.Graphics,
@@ -371,7 +374,7 @@ namespace Scripter.UI.Forms
 			}
 
 			// Other columns: default text
-			e.DrawText(TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+			e?.DrawText(TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
 		}
 
 		private void ScriptsMouseMove(object? sender, MouseEventArgs e)
@@ -556,6 +559,7 @@ namespace Scripter.UI.Forms
 			lvScripts.Items.Clear();
 			btnRun.Enabled = false;
 			_scriptsSelectAll = false;
+			_hasPendingScripts = false; // reset pending tracking
 
 			if (!Directory.Exists(GetBaseFolder()))
 			{
@@ -576,8 +580,7 @@ namespace Scripter.UI.Forms
 					.ThenBy(r => r.ScriptName, StringComparer.OrdinalIgnoreCase))
 				{
 					var item = new ListViewItem { Text = "" };
-					// Column order: [0] select blank, [1] icon placeholder, [2] name, [3] applied, [4] status
-					item.SubItems.Add(""); // icon placeholder
+					item.SubItems.Add("");
 					item.SubItems.Add(row.ScriptName);
 					item.SubItems.Add(row.Applied?.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "");
 					item.SubItems.Add("Executed");
@@ -594,7 +597,7 @@ namespace Scripter.UI.Forms
 				foreach (var file in result.PendingFiles)
 				{
 					var item = new ListViewItem { Text = "" };
-					item.SubItems.Add(""); // icon placeholder
+					item.SubItems.Add("");
 					item.SubItems.Add(file);
 					item.SubItems.Add("");
 					item.SubItems.Add("Pending");
@@ -608,8 +611,9 @@ namespace Scripter.UI.Forms
 					lvScripts.Items.Add(item);
 				}
 
+				_hasPendingScripts = result.PendingFiles.Count > 0; // track availability
+				btnRun.Enabled = _hasPendingScripts; // only enable when pending exists
 				SetStatus(result.Executed.Count, result.PendingFiles.Count);
-				btnRun.Enabled = result.PendingFiles.Count > 0;
 
 				if (showMessage)
 					MessageBox.Show($"Executed: {result.Executed.Count}\nPending: {result.PendingFiles.Count}", "Scripts loaded");
@@ -622,8 +626,7 @@ namespace Scripter.UI.Forms
 			{
 				HideScriptsLoader();
 				btnLoad.Enabled = true;
-				btnRun.Enabled = btnRun.Enabled;
-				lvScripts.Invalidate();
+				lvScripts.Invalidate(); // redraw header (disabled checkbox state)
 			}
 		}
 
@@ -635,6 +638,12 @@ namespace Scripter.UI.Forms
 				return;
 			}
 
+			if (!_hasPendingScripts)
+			{
+				MessageBox.Show("No pending scripts available.", "Info");
+				return;
+			}
+
 			var selected = GetSelectedPendingScripts();
 			if (selected.Count == 0)
 			{
@@ -642,7 +651,6 @@ namespace Scripter.UI.Forms
 				return;
 			}
 
-			// Confirmation dialog (user requested wording preserved)
 			string previewList = string.Join(Environment.NewLine, selected.Take(20));
 			if (selected.Count > 20)
 				previewList += Environment.NewLine + $"... (+{selected.Count - 20} more)";
@@ -666,7 +674,12 @@ namespace Scripter.UI.Forms
 
 			try
 			{
-				var execResult = await _scriptService.ExecutePendingAsync(GetConnectionString(), GetBaseFolder(), new WinFormsLog(this));
+				var execResult = await _scriptService.ExecutePendingAsync(
+					GetConnectionString(),
+					GetBaseFolder(),
+					new WinFormsLog(this),
+					selected);
+
 				if (!execResult.Success)
 				{
 					await LoadScriptsAsync(false);
@@ -691,7 +704,7 @@ namespace Scripter.UI.Forms
 			{
 				HideScriptsLoader();
 				btnLoad.Enabled = true;
-				btnRun.Enabled = true;
+				btnRun.Enabled = _hasPendingScripts; // reflect current pending availability
 			}
 		}
 
