@@ -830,6 +830,7 @@ namespace Scripter.UI.Forms
 
 				MessageBox.Show("Selected pending scripts executed successfully.", "Success");
 				await LoadScriptsAsync(false);
+				await LoadHistoryAsync();
 			}
 			catch (Exception ex)
 			{
@@ -1066,25 +1067,53 @@ namespace Scripter.UI.Forms
 
 		private async Task TestDbAsync()
 		{
-			var result = await _repository.TestConnectionAsync();
-			if (!result.Success)
+			var cs = GetConnectionString();
+			if (string.IsNullOrWhiteSpace(cs))
+			{
+				MessageBox.Show("Connection string is empty.", "Test Database", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+				return;
+			}
+
+			btnTestDb.Enabled = false;
+			lblStatus.Text = "Testing database connection...";
+			ShowScriptsLoader("Testing connection...");
+
+			try
+			{
+				var result = await _repository.TestConnectionAsync();
+				if (!result.Success)
+				{
+					MessageBox.Show(
+						$"Connection failed.\n\n{result.Error?.Message}",
+						"Test Database",
+						MessageBoxButtons.OK,
+						MessageBoxIcon.Error);
+					lblStatus.Text = "Database test failed.";
+					return;
+				}
+
+				MessageBox.Show(
+					$"Connection succeeded.\n\nServer: {result.Server}\nDatabase: {result.Database}\nVersion: {result.Version}\nLatency: {result.ElapsedMs} ms",
+					"Test Database",
+					MessageBoxButtons.OK,
+					MessageBoxIcon.Information);
+
+				lblStatus.Text = $"Database test succeeded. {result.Server}/{result.Database} ({result.ElapsedMs} ms)";
+			}
+			catch (Exception ex)
 			{
 				MessageBox.Show(
-					$"Connection failed.\n\n{result.Error?.Message}",
+					$"Connection failed.\n\n{ex.Message}",
 					"Test Database",
 					MessageBoxButtons.OK,
 					MessageBoxIcon.Error);
 				lblStatus.Text = "Database test failed.";
-				return;
 			}
-
-			MessageBox.Show(
-				$"Connection succeeded.\n\nServer: {result.Server}\nDatabase: {result.Database}\nVersion: {result.Version}\nLatency: {result.ElapsedMs} ms",
-				"Test Database",
-				MessageBoxButtons.OK,
-				MessageBoxIcon.Information);
-
-			lblStatus.Text = $"Database test succeeded. {result.Server}/{result.Database} ({result.ElapsedMs} ms)";
+			finally
+			{
+				HideScriptsLoader();
+				btnTestDb.Enabled = true;
+			}
 		}
 	}
 }
