@@ -1,4 +1,5 @@
 ﻿using DbUp.Engine.Output;
+using System.Windows.Forms.VisualStyles;
 
 namespace Scripter.UI.Forms
 {
@@ -39,6 +40,20 @@ namespace Scripter.UI.Forms
 		private readonly IPreviewService _previewService;
 		private readonly IIconProvider _icons;
 
+		// Selection state (Scripts)
+		private bool _scriptsSelectAll;
+		private Image _imgExecuted = null!;
+		private Image _imgPending = null!;
+		private Image _imgError = null!;
+
+		private sealed class ScriptRowTag
+		{
+			public bool IsPending;
+			public bool Selected;
+			public string FileName = "";
+			public string Status = "";
+		}
+
 		// Constants
 		private const int GapYSmall = 0;
 		private const int GapY = 1;
@@ -54,7 +69,6 @@ namespace Scripter.UI.Forms
 			ShowIcon = false;
 			Icon = null;
 
-			// Instantiate services (simple composition)
 			_icons = new IconProvider();
 			_repository = new ScriptRepository(GetConnectionString, GetBaseFolder);
 			_scriptService = new ScriptService(_repository);
@@ -72,7 +86,6 @@ namespace Scripter.UI.Forms
 				Dock = DockStyle.Bottom,
 				Height = 96,
 				Padding = new Padding(10, 6, 10, 6),
-				TextAlign = ContentAlignment.MiddleLeft,
 				Text = "Ready."
 			};
 
@@ -88,10 +101,8 @@ namespace Scripter.UI.Forms
 			var raw = txtScriptsFolder?.Text;
 			if (string.IsNullOrWhiteSpace(raw))
 				return ""; // signal "not set"
-			return Path.GetFullPath(raw); // safe now
+			return Path.GetFullPath(raw);
 		}
-
-		// ---------- UI Builders ----------
 
 		private Panel CreateHeaderPanel()
 		{
@@ -232,23 +243,30 @@ namespace Scripter.UI.Forms
 				Font = new Font("Segoe UI", 10f),
 				OwnerDraw = true
 			};
+
+			// Columns:
+			// 0: Select checkbox header
+			// 1: Icon
+			// 2: Script Name
+			// 3: Applied
+			// 4: Status
+			lvScripts.Columns.Add("Select", 54);
 			lvScripts.Columns.Add("", 40);
 			lvScripts.Columns.Add("Script Name", 440);
 			lvScripts.Columns.Add("Applied", 240);
 			lvScripts.Columns.Add("Status", 160);
 
-			var imgList = new ImageList { ImageSize = new Size(20, 20), ColorDepth = ColorDepth.Depth32Bit };
-			imgList.Images.Add("executed", _icons.Get("executed", 20));
-			imgList.Images.Add("pending", _icons.Get("pending", 20));
-			imgList.Images.Add("error", _icons.Get("error", 20));
-			lvScripts.SmallImageList = imgList;
+			_imgExecuted = _icons.Get("executed", 20);
+			_imgPending = _icons.Get("pending", 20);
+			_imgError = _icons.Get("error", 20);
 
-			lvScripts.DrawColumnHeader += (s, e) => e.DrawDefault = true;
+			lvScripts.DrawColumnHeader += DrawScriptsColumnHeader;
 			lvScripts.DrawSubItem += DrawScriptsSubItem;
 
 			lvScripts.MouseMove += ScriptsMouseMove;
 			lvScripts.MouseLeave += (s, e) => ResetScriptsHover();
 			lvScripts.MouseUp += ScriptsMouseUp;
+			lvScripts.ColumnClick += ScriptsHeaderClick;
 
 			overlayPanel = BuildOverlay(out overlayLabel, out overlayProgress);
 			lvScripts.Controls.Add(overlayPanel);
@@ -259,6 +277,154 @@ namespace Scripter.UI.Forms
 			host.Controls.Add(scriptsTopSpacer);
 			page.Controls.Add(host);
 			return page;
+		}
+
+		private void DrawScriptsColumnHeader(object? sender, DrawListViewColumnHeaderEventArgs e)
+		{
+			if (e.ColumnIndex != 0)
+			{
+				e.DrawDefault = true;
+				return;
+			}
+
+			e.Graphics.FillRectangle(SystemBrushes.Control, e.Bounds);
+			Rectangle cb = new(
+				e.Bounds.X + (e.Bounds.Width - 18) / 2,
+				e.Bounds.Y + (e.Bounds.Height - 16) / 2,
+				16,
+				16);
+			CheckBoxRenderer.DrawCheckBox(
+				e.Graphics,
+				cb.Location,
+				_scriptsSelectAll ? CheckBoxState.CheckedNormal : CheckBoxState.UncheckedNormal);
+		}
+
+		private void ScriptsHeaderClick(object? sender, ColumnClickEventArgs e)
+		{
+			if (e.Column != 0) return;
+			_scriptsSelectAll = !_scriptsSelectAll;
+			foreach (ListViewItem it in lvScripts.Items)
+			{
+				if (it.Tag is ScriptRowTag tag && tag.IsPending)
+					tag.Selected = _scriptsSelectAll;
+			}
+			lvScripts.Invalidate();
+		}
+
+		private void DrawScriptsSubItem(object? sender, DrawListViewSubItemEventArgs e)
+		{
+			var tag = e?.Item?.Tag as ScriptRowTag;
+
+			// Column 0: selection checkbox for pending
+			if (e?.ColumnIndex == 0)
+			{
+				e.Graphics.FillRectangle(SystemBrushes.Window, e.Bounds);
+				if (tag?.IsPending == true)
+				{
+					Rectangle cb = new(
+						e.Bounds.X + (e.Bounds.Width - 16) / 2,
+						e.Bounds.Y + (e.Bounds.Height - 16) / 2,
+						16,
+						16);
+					CheckBoxRenderer.DrawCheckBox(
+						e.Graphics,
+						cb.Location,
+						tag.Selected ? CheckBoxState.CheckedNormal : CheckBoxState.UncheckedNormal);
+				}
+				return;
+			}
+
+			// Column 1: icon
+			if (e?.ColumnIndex == 1)
+			{
+				e.Graphics.FillRectangle(SystemBrushes.Window, e.Bounds);
+				Image? img = null;
+				if (tag != null)
+				{
+					if (string.Equals(tag.Status, "Error", StringComparison.OrdinalIgnoreCase))
+						img = _imgError;
+					else if (tag.IsPending)
+						img = _imgPending;
+					else
+						img = _imgExecuted;
+				}
+				if (img != null)
+				{
+					int x = e.Bounds.X + (e.Bounds.Width - img.Width) / 2;
+					int y = e.Bounds.Y + (e.Bounds.Height - img.Height) / 2;
+					e.Graphics.DrawImage(img, x, y, img.Width, img.Height);
+				}
+				return;
+			}
+
+			// Column 2: Script Name (blue text)
+			if (e.ColumnIndex == 2)
+			{
+				TextRenderer.DrawText(
+					e.Graphics,
+					e.SubItem?.Text,
+					e.SubItem?.Font!,
+					e.Bounds,
+					Color.RoyalBlue,
+					TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
+				return;
+			}
+
+			// Other columns: default text
+			e.DrawText(TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+		}
+
+		private void ScriptsMouseMove(object? sender, MouseEventArgs e)
+		{
+			var hit = lvScripts.HitTest(e.Location);
+			bool onName = hit.Item != null && hit.SubItem != null && hit.Item.SubItems.IndexOf(hit.SubItem) == 2;
+			if (onName != _scriptsHandCursor)
+			{
+				_scriptsHandCursor = onName;
+				lvScripts.Cursor = onName ? Cursors.Hand : Cursors.Default;
+			}
+
+			if (onName && hit.Item != null && !ReferenceEquals(_lastTipItemScripts, hit.Item))
+			{
+				_lastTipItemScripts = hit.Item;
+				string fileName = hit.Item.SubItems[2].Text;
+				string preview = _previewService.GetPreviewByFileName(fileName);
+				if (!string.IsNullOrEmpty(preview))
+					ttScripts.Show(preview, lvScripts, e.Location + new Size(16, 20), 15000);
+			}
+		}
+
+		private void ScriptsMouseUp(object? sender, MouseEventArgs e)
+		{
+			var hit = lvScripts.HitTest(e.Location);
+			if (hit.Item == null || hit.SubItem == null) return;
+			int idx = hit.Item.SubItems.IndexOf(hit.SubItem);
+
+			// Toggle pending selection if first column clicked
+			if (idx == 0 && hit.Item.Tag is ScriptRowTag tag && tag.IsPending)
+			{
+				tag.Selected = !tag.Selected;
+				if (!tag.Selected) _scriptsSelectAll = false; // deselect header if any unchecked
+				lvScripts.Invalidate(hit.SubItem.Bounds);
+				return;
+			}
+
+			// Open viewer on script name column
+			if (e.Button == MouseButtons.Left && idx == 2)
+			{
+				string fileName = hit.Item.SubItems[2].Text;
+				string content = _repository.GetScriptContentByNameOrFile(fileName);
+				using var dlg = new ScriptViewer(fileName, content);
+				dlg.ShowDialog(this);
+			}
+		}
+
+		private void ResetScriptsHover()
+		{
+			_scriptsHandCursor = false;
+			lvScripts.Cursor = Cursors.Default;
+			_lastTipItemScripts = null;
+			ttScripts.Hide(lvScripts);
 		}
 
 		private TabPage CreateHistoryTab()
@@ -326,113 +492,6 @@ namespace Scripter.UI.Forms
 			return page;
 		}
 
-		private Panel BuildOverlay(out Label label, out ProgressBar bar)
-		{
-			var panel = new Panel
-			{
-				Dock = DockStyle.Fill,
-				Visible = false,
-				BackColor = Color.FromArgb(160, SystemColors.ControlLightLight)
-			};
-
-			label = new Label { Text = "Working...", AutoSize = true, Font = new Font("Segoe UI", 10) };
-			bar = new ProgressBar { Style = ProgressBarStyle.Marquee, MarqueeAnimationSpeed = 35, Width = 260 };
-
-			var content = new FlowLayoutPanel
-			{
-				FlowDirection = FlowDirection.TopDown,
-				AutoSize = true,
-				Padding = new Padding(16)
-			};
-			content.Controls.Add(label);
-			content.Controls.Add(bar);
-
-			var center = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 3 };
-			center.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-			center.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-			center.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-			center.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-			center.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-			center.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-			center.Controls.Add(content, 1, 1);
-
-			panel.Controls.Add(center);
-			return panel;
-		}
-
-		// ---------- Event handlers (Scripts) ----------
-
-		private void DrawScriptsSubItem(object? sender, DrawListViewSubItemEventArgs e)
-		{
-			if (e.ColumnIndex == 0 && e?.Item?.ImageList != null)
-			{
-				var img = e.Item.ImageList.Images[e.Item.ImageKey];
-				if (img != null)
-				{
-					int x = e.Bounds.X + (e.Bounds.Width - img.Width) / 2;
-					int y = e.Bounds.Y + (e.Bounds.Height - img.Height) / 2;
-					e.Graphics.DrawImage(img, x, y, img.Width, img.Height);
-				}
-			}
-			else if (e?.ColumnIndex == 1)
-			{
-				TextRenderer.DrawText(
-					e.Graphics,
-					e.SubItem?.Text,
-					e.SubItem?.Font!,
-					e.Bounds,
-					Color.RoyalBlue,
-					TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
-			}
-			else
-			{
-				e?.DrawText(TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
-			}
-		}
-
-		private void ScriptsMouseMove(object? sender, MouseEventArgs e)
-		{
-			var hit = lvScripts.HitTest(e.Location);
-			bool onName = hit.Item != null && hit.SubItem != null && hit.Item.SubItems.IndexOf(hit.SubItem) == 1;
-			if (onName != _scriptsHandCursor)
-			{
-				_scriptsHandCursor = onName;
-				lvScripts.Cursor = onName ? Cursors.Hand : Cursors.Default;
-			}
-
-			if (onName && hit.Item != null && !ReferenceEquals(_lastTipItemScripts, hit.Item))
-			{
-				_lastTipItemScripts = hit.Item;
-				string fileName = hit.Item.SubItems[1].Text;
-				string preview = _previewService.GetPreviewByFileName(fileName);
-				if (!string.IsNullOrEmpty(preview))
-					ttScripts.Show(preview, lvScripts, e.Location + new Size(16, 20), 15000);
-			}
-		}
-
-		private void ScriptsMouseUp(object? sender, MouseEventArgs e)
-		{
-			if (e.Button != MouseButtons.Left) return;
-			var hit = lvScripts.HitTest(e.Location);
-			if (hit.Item == null || hit.SubItem == null) return;
-			if (hit.Item.SubItems.IndexOf(hit.SubItem) != 1) return;
-
-			string fileName = hit.Item.SubItems[1].Text;
-			string content = _repository.GetScriptContentByNameOrFile(fileName);
-			using var dlg = new ScriptViewerForm(fileName, content);
-			dlg.ShowDialog(this);
-		}
-
-		private void ResetScriptsHover()
-		{
-			_scriptsHandCursor = false;
-			lvScripts.Cursor = Cursors.Default;
-			_lastTipItemScripts = null;
-			ttScripts.Hide(lvScripts);
-		}
-
-		// ---------- Event handlers (History) ----------
-
 		private void DrawHistorySubItem(object? sender, DrawListViewSubItemEventArgs e)
 		{
 			if (e.ColumnIndex == 1)
@@ -480,7 +539,7 @@ namespace Scripter.UI.Forms
 
 			int id = int.TryParse(hit.Item.SubItems[0].Text, out var v) ? v : 0;
 			string sql = _repository.GetScriptContentById(id);
-			using var dlg = new ScriptViewerForm(hit.Item.SubItems[1].Text, sql);
+			using var dlg = new ScriptViewer(hit.Item.SubItems[1].Text, sql);
 			dlg.ShowDialog(this);
 		}
 
@@ -492,12 +551,11 @@ namespace Scripter.UI.Forms
 			ttHistory.Hide(lvHistory);
 		}
 
-		// ---------- Actions ----------
-
 		private async Task LoadScriptsAsync(bool showMessage)
 		{
 			lvScripts.Items.Clear();
 			btnRun.Enabled = false;
+			_scriptsSelectAll = false;
 
 			if (!Directory.Exists(GetBaseFolder()))
 			{
@@ -517,19 +575,36 @@ namespace Scripter.UI.Forms
 					.OrderBy(r => r.Applied ?? DateTime.MaxValue)
 					.ThenBy(r => r.ScriptName, StringComparer.OrdinalIgnoreCase))
 				{
-					var item = new ListViewItem { ImageKey = "executed", Text = "" };
+					var item = new ListViewItem { Text = "" };
+					// Column order: [0] select blank, [1] icon placeholder, [2] name, [3] applied, [4] status
+					item.SubItems.Add(""); // icon placeholder
 					item.SubItems.Add(row.ScriptName);
 					item.SubItems.Add(row.Applied?.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "");
 					item.SubItems.Add("Executed");
+					item.Tag = new ScriptRowTag
+					{
+						IsPending = false,
+						Selected = false,
+						FileName = row.ScriptName,
+						Status = "Executed"
+					};
 					lvScripts.Items.Add(item);
 				}
 
 				foreach (var file in result.PendingFiles)
 				{
-					var item = new ListViewItem { ImageKey = "pending", Text = "" };
+					var item = new ListViewItem { Text = "" };
+					item.SubItems.Add(""); // icon placeholder
 					item.SubItems.Add(file);
 					item.SubItems.Add("");
 					item.SubItems.Add("Pending");
+					item.Tag = new ScriptRowTag
+					{
+						IsPending = true,
+						Selected = false,
+						FileName = file,
+						Status = "Pending"
+					};
 					lvScripts.Items.Add(item);
 				}
 
@@ -548,6 +623,7 @@ namespace Scripter.UI.Forms
 				HideScriptsLoader();
 				btnLoad.Enabled = true;
 				btnRun.Enabled = btnRun.Enabled;
+				lvScripts.Invalidate();
 			}
 		}
 
@@ -558,6 +634,31 @@ namespace Scripter.UI.Forms
 				MessageBox.Show("Folder not found.");
 				return;
 			}
+
+			var selected = GetSelectedPendingScripts();
+			if (selected.Count == 0)
+			{
+				MessageBox.Show("No pending scripts selected.", "Info");
+				return;
+			}
+
+			// Confirmation dialog (user requested wording preserved)
+			string previewList = string.Join(Environment.NewLine, selected.Take(20));
+			if (selected.Count > 20)
+				previewList += Environment.NewLine + $"... (+{selected.Count - 20} more)";
+			string confirmMsg =
+				"Are you sure you want to rexecute un the selected scripts?" +
+				Environment.NewLine + Environment.NewLine + previewList;
+
+			var answer = MessageBox.Show(
+				confirmMsg,
+				"Confirm Execution",
+				MessageBoxButtons.YesNo,
+				MessageBoxIcon.Question,
+				MessageBoxDefaultButton.Button2);
+
+			if (answer != DialogResult.Yes)
+				return;
 
 			ShowScriptsLoader("Running scripts...");
 			btnLoad.Enabled = false;
@@ -579,7 +680,7 @@ namespace Scripter.UI.Forms
 					return;
 				}
 
-				MessageBox.Show("All pending scripts executed successfully.", "Success");
+				MessageBox.Show("Selected pending scripts executed successfully.", "Success");
 				await LoadScriptsAsync(false);
 			}
 			catch (Exception ex)
@@ -592,6 +693,17 @@ namespace Scripter.UI.Forms
 				btnLoad.Enabled = true;
 				btnRun.Enabled = true;
 			}
+		}
+
+		private List<string> GetSelectedPendingScripts()
+		{
+			var list = new List<string>();
+			foreach (ListViewItem it in lvScripts.Items)
+			{
+				if (it.Tag is ScriptRowTag tag && tag.IsPending && tag.Selected)
+					list.Add(tag.FileName);
+			}
+			return list;
 		}
 
 		private async Task LoadHistoryAsync()
@@ -623,8 +735,6 @@ namespace Scripter.UI.Forms
 			}
 		}
 
-		// ---------- Status / Error ----------
-
 		private void ShowError(string title, Exception ex, string? prefix = null)
 		{
 			var msg = string.IsNullOrEmpty(prefix) ? "" : prefix + Environment.NewLine + Environment.NewLine;
@@ -636,12 +746,15 @@ namespace Scripter.UI.Forms
 		{
 			foreach (ListViewItem it in lvScripts.Items)
 			{
-				if (string.Equals(it.SubItems[1].Text, fileNameOnly, StringComparison.OrdinalIgnoreCase))
+				if (string.Equals(it.SubItems[2].Text, fileNameOnly, StringComparison.OrdinalIgnoreCase))
 				{
-					it.ImageKey = "error";
+					if (it.Tag is ScriptRowTag tag)
+					{
+						tag.Status = "Error";
+						tag.Selected = false;
+					}
 					it.ForeColor = Color.Red;
-					if (it.SubItems.Count >= 4)
-						it.SubItems[3].Text = "Error";
+					it.SubItems[4].Text = "Error";
 					if (!string.IsNullOrWhiteSpace(errorText))
 						it.ToolTipText = errorText;
 					it.Selected = true;
@@ -649,12 +762,11 @@ namespace Scripter.UI.Forms
 					break;
 				}
 			}
+			lvScripts.Invalidate();
 		}
 
 		private void SetStatus(int executed, int pending) =>
 			lblStatus.Text = $"Loaded.{Environment.NewLine}Executed: {executed}{Environment.NewLine}Pending: {pending}";
-
-		// ---------- Overlay helpers ----------
 
 		private void ShowScriptsLoader(string text)
 		{
@@ -682,7 +794,38 @@ namespace Scripter.UI.Forms
 			overlayHistoryPanel.Visible = false;
 		}
 
-		// ---------- Logging ----------
+		private Panel BuildOverlay(out Label label, out ProgressBar progress)
+		{
+			var panel = new Panel
+			{
+				Dock = DockStyle.Fill,
+				BackColor = Color.FromArgb(128, Color.LightGray),
+				Visible = false
+			};
+
+			label = new Label
+			{
+				AutoSize = false,
+				Dock = DockStyle.Top,
+				Height = 32,
+				Font = new Font("Segoe UI", 12f, FontStyle.Bold),
+				ForeColor = Color.Black,
+				BackColor = Color.Transparent
+			};
+
+			progress = new ProgressBar
+			{
+				Dock = DockStyle.Top,
+				Height = 24,
+				Style = ProgressBarStyle.Blocks
+			};
+
+			panel.Controls.Add(progress);
+			panel.Controls.Add(label);
+			panel.Controls.SetChildIndex(label, 0);
+
+			return panel;
+		}
 
 		private sealed class WinFormsLog : IUpgradeLog
 		{

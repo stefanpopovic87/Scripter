@@ -1,13 +1,13 @@
 ﻿namespace Scripter.UI.Forms
 {
-	public sealed class ScriptViewerForm : Form
+	public sealed class ScriptViewer : Form
 	{
 		private readonly TextBox txt;
 		private readonly Button btnCopy;
 		private readonly Button btnClose;
 		private readonly ToolTip tip;
 
-		public ScriptViewerForm(string title, string content)
+		public ScriptViewer(string title, string content)
 		{
 			Text = title;
 			StartPosition = FormStartPosition.CenterParent;
