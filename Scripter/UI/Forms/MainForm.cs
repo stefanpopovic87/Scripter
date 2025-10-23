@@ -60,6 +60,26 @@ namespace Scripter.UI.Forms
 			public bool Selected;
 			public string FileName = "";
 			public string Status = "";
+			public string FullPath = "";
+			public ReleaseGroup? Group;
+		}
+
+		// Release grouping state
+		private bool _useReleaseGrouping;
+		private List<ReleaseGroup> _releaseGroups = new();
+
+		private sealed class ReleaseGroup
+		{
+			public string Name = "";
+			public string FullPath = "";
+			public DateTime CreatedUtc;
+			public readonly List<ListViewItem> ScriptItems = new();
+			public bool HeaderChecked;          // scripts tab only
+		}
+		private sealed class GroupRowTag
+		{
+			public ReleaseGroup Group = null!;
+			public bool IsHistory;              // true if history tab header (no checkbox)
 		}
 
 		// Constants
@@ -122,9 +142,9 @@ namespace Scripter.UI.Forms
 			var header = new Panel
 			{
 				Dock = DockStyle.Top,
-				Height = 58,                    // increased overall height
-				Padding = new Padding(12, 14, 0, 12), // larger bottom padding for extra space under logo
-				Margin = new Padding(0, 0, 0, 12)    // larger external bottom margin before inputs
+				Height = 58,
+				Padding = new Padding(12, 14, 0, 12),
+				Margin = new Padding(0, 0, 0, 12)
 			};
 
 			header.Paint += (s, e) =>
@@ -154,7 +174,7 @@ namespace Scripter.UI.Forms
 				Dock = DockStyle.Top,
 				AutoSize = true,
 				Padding = new Padding(4, 2, 4, 0),
-				Margin = new Padding(0, 0, 0, 2),  // smaller bottom margin before tabs
+				Margin = new Padding(0, 0, 0, 2),
 				ColumnCount = 3
 			};
 			panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -285,7 +305,6 @@ namespace Scripter.UI.Forms
 
 			lvScripts.DrawColumnHeader += DrawScriptsColumnHeader;
 			lvScripts.DrawSubItem += DrawScriptsSubItem;
-
 			lvScripts.MouseMove += ScriptsMouseMove;
 			lvScripts.MouseLeave += (s, e) => ResetScriptsHover();
 			lvScripts.MouseUp += ScriptsMouseUp;
@@ -299,6 +318,65 @@ namespace Scripter.UI.Forms
 			host.Controls.Add(lvScripts);
 			host.Controls.Add(scriptsTopSpacer);
 			page.Controls.Add(host);
+			return page;
+		}
+
+		private TabPage CreateHistoryTab()
+		{
+			var page = new TabPage("History") { Padding = new Padding(3, 2, 3, 2) };
+			lvHistory = new ListView
+			{
+				Dock = DockStyle.Fill,
+				View = View.Details,
+				FullRowSelect = true,
+				GridLines = true,
+				Font = new Font("Segoe UI", 10f),
+				OwnerDraw = true
+			};
+			lvHistory.Columns.Add("Id", 100);
+			lvHistory.Columns.Add("Script Name", 440);
+			lvHistory.Columns.Add("Applied", 240);
+			lvHistory.Columns.Add("Executed By", 140);
+			lvHistory.Columns.Add("Machine", 180);
+			lvHistory.Columns.Add("Path", 640);
+
+			lvHistory.DrawColumnHeader += (s, e) => e.DrawDefault = true;
+			lvHistory.DrawSubItem += DrawHistorySubItem;
+
+			lvHistory.MouseMove += HistoryMouseMove;
+			lvHistory.MouseLeave += (s, e) => ResetHistoryHover();
+			lvHistory.MouseUp += HistoryMouseUp;
+			lvHistory.ColumnClick += HistoryHeaderClick;
+
+			overlayHistoryPanel = BuildOverlay(out overlayHistoryLabel, out overlayHistoryProgress);
+			lvHistory.Controls.Add(overlayHistoryPanel);
+
+			btnHistoryRefresh = new Button
+			{
+				Text = "Refresh",
+				AutoSize = true,
+				Image = _icons.Get("refresh", 18),
+				TextImageRelation = TextImageRelation.ImageBeforeText,
+				Margin = new Padding(3, 3, 3, 6)
+			};
+			btnHistoryRefresh.Click += async (s, e) => await LoadHistoryAsync();
+
+			var top = new FlowLayoutPanel
+			{
+				Dock = DockStyle.Top,
+				AutoSize = true,
+				FlowDirection = FlowDirection.LeftToRight
+			};
+			top.Controls.Add(btnHistoryRefresh);
+
+			page.Controls.Add(lvHistory);
+			page.Controls.Add(top);
+			page.Enter += async (s, e) =>
+			{
+				if (lvHistory.Items.Count == 0)
+					await LoadHistoryAsync();
+			};
+
 			return page;
 		}
 
@@ -339,90 +417,52 @@ namespace Scripter.UI.Forms
 			CheckBoxRenderer.DrawCheckBox(e.Graphics, cb.Location, state);
 		}
 
-		// ColumnClick for scripts (sorting + select-all)
-		private void ScriptsHeaderClick(object? sender, ColumnClickEventArgs e)
+		private void DrawScriptsSubItem(object? sender, DrawListViewSubItemEventArgs e)
 		{
-			// Column 0: Select-All
-			if (e.Column == 0)
+			// Group header (scripts)
+			if (e.Item.Tag is GroupRowTag grTag && !grTag.IsHistory)
 			{
-				if (!_hasPendingScripts) return;
-				_scriptsSelectAll = !_scriptsSelectAll;
-				foreach (ListViewItem it in lvScripts.Items)
-					if (it.Tag is ScriptRowTag tag && tag.IsPending)
-						tag.Selected = _scriptsSelectAll;
-				lvScripts.Invalidate();
+				var grp = grTag.Group;
+				using var bg = new SolidBrush(Color.FromArgb(235, 235, 235));
+				e.Graphics.FillRectangle(bg, e.Bounds);
+				if (e.ColumnIndex == 0)
+				{
+					var state = grp.HeaderChecked ? CheckBoxState.CheckedNormal : CheckBoxState.UncheckedNormal;
+					Size glyph = CheckBoxRenderer.GetGlyphSize(e.Graphics, state);
+					var cb = new Rectangle(
+						e.Bounds.X + (e.Bounds.Width - glyph.Width) / 2,
+						e.Bounds.Y + (e.Bounds.Height - glyph.Height) / 2,
+						glyph.Width,
+						glyph.Height);
+					CheckBoxRenderer.DrawCheckBox(e.Graphics, cb.Location, state);
+				}
+				else if (e.ColumnIndex == 2)
+				{
+					int executed = grp.ScriptItems.Count(i => i.Tag is ScriptRowTag t && !t.IsPending);
+					int pending = grp.ScriptItems.Count(i => i.Tag is ScriptRowTag t && t.IsPending);
+					string text = $"{grp.Name}  (Executed: {executed}  Pending: {pending})";
+					TextRenderer.DrawText(
+						e.Graphics,
+						text,
+						lvScripts.Font,
+						e.Bounds,
+						Color.Black,
+						TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+				}
 				return;
 			}
 
-			// Ignore icon column (1)
-			if (e.Column == 1) return;
-
-			// Sorting (columns 2,3,4)
-			if (_scriptsSortColumn == e.Column)
-				_scriptsSortAscending = !_scriptsSortAscending;
-			else
+			var tag = e.Item.Tag as ScriptRowTag;
+			if (tag == null)
 			{
-				_scriptsSortColumn = e.Column;
-				_scriptsSortAscending = true;
-			}
-			SortScripts();
-		}
-
-		private void SortScripts()
-		{
-			if (_scriptsSortColumn < 0) return;
-
-			var items = lvScripts.Items.Cast<ListViewItem>().ToList();
-			IEnumerable<ListViewItem> ordered = items;
-
-			switch (_scriptsSortColumn)
-			{
-				case 2: // Script Name
-					ordered = _scriptsSortAscending
-						? items.OrderBy(i => i.SubItems[2].Text, StringComparer.OrdinalIgnoreCase)
-						: items.OrderByDescending(i => i.SubItems[2].Text, StringComparer.OrdinalIgnoreCase);
-					break;
-
-				case 3: // Applied (date; pending blank -> DateTime.MaxValue in ascending)
-					DateTime GetApplied(ListViewItem it)
-					{
-						var t = it.SubItems[3].Text;
-						if (string.IsNullOrWhiteSpace(t)) return DateTime.MaxValue;
-						if (DateTime.TryParse(t, out var dt)) return dt;
-						return DateTime.MaxValue;
-					}
-					ordered = _scriptsSortAscending
-						? items.OrderBy(GetApplied).ThenBy(i => i.SubItems[2].Text, StringComparer.OrdinalIgnoreCase)
-						: items.OrderByDescending(GetApplied).ThenByDescending(i => i.SubItems[2].Text, StringComparer.OrdinalIgnoreCase);
-					break;
-
-				case 4: // Status custom rank
-					int Rank(ListViewItem it) => it.SubItems[4].Text.ToLowerInvariant() switch
-					{
-						"executed" => 0,
-						"pending" => 1,
-						"error" => 2,
-						_ => 99
-					};
-					ordered = _scriptsSortAscending
-						? items.OrderBy(Rank).ThenBy(i => i.SubItems[2].Text, StringComparer.OrdinalIgnoreCase)
-						: items.OrderByDescending(Rank).ThenByDescending(i => i.SubItems[2].Text, StringComparer.OrdinalIgnoreCase);
-					break;
+				e.DrawDefault = true;
+				return;
 			}
 
-			lvScripts.BeginUpdate();
-			lvScripts.Items.Clear();
-			foreach (var it in ordered) lvScripts.Items.Add(it);
-			lvScripts.EndUpdate();
-		}
-
-		private void DrawScriptsSubItem(object? sender, DrawListViewSubItemEventArgs e)
-		{
-			var tag = e?.Item?.Tag as ScriptRowTag;
-			if (e?.ColumnIndex == 0)
+			if (e.ColumnIndex == 0)
 			{
 				e.Graphics.FillRectangle(SystemBrushes.Window, e.Bounds);
-				if (tag?.IsPending == true)
+				if (tag.IsPending)
 				{
 					Rectangle cb = new(
 						e.Bounds.X + (e.Bounds.Width - 16) / 2,
@@ -436,19 +476,16 @@ namespace Scripter.UI.Forms
 				}
 				return;
 			}
-			if (e?.ColumnIndex == 1)
+			if (e.ColumnIndex == 1)
 			{
 				e.Graphics.FillRectangle(SystemBrushes.Window, e.Bounds);
 				Image? img = null;
-				if (tag != null)
-				{
-					if (string.Equals(tag.Status, "Error", StringComparison.OrdinalIgnoreCase))
-						img = _imgError;
-					else if (tag.IsPending)
-						img = _imgPending;
-					else
-						img = _imgExecuted;
-				}
+				if (string.Equals(tag.Status, "Error", StringComparison.OrdinalIgnoreCase))
+					img = _imgError;
+				else if (tag.IsPending)
+					img = _imgPending;
+				else
+					img = _imgExecuted;
 				if (img != null)
 				{
 					int x = e.Bounds.X + (e.Bounds.Width - img.Width) / 2;
@@ -457,7 +494,7 @@ namespace Scripter.UI.Forms
 				}
 				return;
 			}
-			if (e?.ColumnIndex == 2)
+			if (e.ColumnIndex == 2)
 			{
 				TextRenderer.DrawText(
 					e.Graphics,
@@ -468,13 +505,49 @@ namespace Scripter.UI.Forms
 					TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
 				return;
 			}
-			e?.DrawText(TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+			e.DrawText(TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+		}
+
+		private void DrawHistorySubItem(object? sender, DrawListViewSubItemEventArgs e)
+		{
+			// Group header (history) – gray, no checkbox
+			if (e.Item.Tag is GroupRowTag grTag && grTag.IsHistory)
+			{
+				using var bg = new SolidBrush(Color.FromArgb(235, 235, 235));
+				e.Graphics.FillRectangle(bg, e.Bounds);
+				if (e.ColumnIndex == 1)
+				{
+					TextRenderer.DrawText(
+						e.Graphics,
+						grTag.Group.Name,
+						lvHistory.Font,
+						e.Bounds,
+						Color.Black,
+						TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+				}
+				return;
+			}
+
+			if (e.ColumnIndex == 1)
+			{
+				TextRenderer.DrawText(
+					e.Graphics,
+					e.SubItem?.Text,
+					e.SubItem?.Font!,
+					e.Bounds,
+					Color.RoyalBlue,
+					TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
+			}
+			else
+			{
+				e.DrawText(TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+			}
 		}
 
 		private void ScriptsMouseMove(object? sender, MouseEventArgs e)
 		{
 			var hit = lvScripts.HitTest(e.Location);
-			bool onName = hit.Item != null && hit.SubItem != null && hit.Item.SubItems.IndexOf(hit.SubItem) == 2;
+			bool onName = hit.Item != null && hit.SubItem != null && hit.Item.SubItems.IndexOf(hit.SubItem) == 2 && hit.Item.Tag is ScriptRowTag;
 			if (onName != _scriptsHandCursor)
 			{
 				_scriptsHandCursor = onName;
@@ -496,19 +569,38 @@ namespace Scripter.UI.Forms
 			var hit = lvScripts.HitTest(e.Location);
 			if (hit.Item == null || hit.SubItem == null) return;
 			int idx = hit.Item.SubItems.IndexOf(hit.SubItem);
-			if (idx == 0 && hit.Item.Tag is ScriptRowTag tag && tag.IsPending)
+
+			// Group header checkbox
+			if (hit.Item.Tag is GroupRowTag grTag && !grTag.IsHistory && idx == 0)
 			{
-				tag.Selected = !tag.Selected;
-				if (!tag.Selected) _scriptsSelectAll = false;
-				lvScripts.Invalidate(hit.SubItem.Bounds);
+				var grp = grTag.Group;
+				bool newState = !grp.HeaderChecked;
+				foreach (var it in grp.ScriptItems)
+					if (it.Tag is ScriptRowTag rt && rt.IsPending)
+						rt.Selected = newState;
+				grp.HeaderChecked = newState;
+				UpdateGlobalSelectAllFlag();
+				lvScripts.Invalidate();
 				return;
 			}
-			if (e.Button == MouseButtons.Left && idx == 2)
+
+			if (hit.Item.Tag is ScriptRowTag tag)
 			{
-				string fileName = hit.Item.SubItems[2].Text;
-				string content = _repository.GetScriptContentByNameOrFile(fileName);
-				using var dlg = new ScriptViewer(fileName, content);
-				dlg.ShowDialog(this);
+				if (idx == 0 && tag.IsPending)
+				{
+					tag.Selected = !tag.Selected;
+					UpdateGroupHeaderCheckStates();
+					UpdateGlobalSelectAllFlag();
+					lvScripts.Invalidate(hit.SubItem.Bounds);
+					return;
+				}
+				if (e.Button == MouseButtons.Left && idx == 2)
+				{
+					string fileName = tag.FileName;
+					string content = _repository.GetScriptContentByNameOrFile(fileName);
+					using var dlg = new ScriptViewer(fileName, content);
+					dlg.ShowDialog(this);
+				}
 			}
 		}
 
@@ -520,94 +612,12 @@ namespace Scripter.UI.Forms
 			ttScripts.Hide(lvScripts);
 		}
 
-		private TabPage CreateHistoryTab()
-		{
-			var page = new TabPage("History") { Padding = new Padding(3, 2, 3, 2) };
-			var layout = new TableLayoutPanel
-			{
-				Dock = DockStyle.Fill,
-				ColumnCount = 2,
-				RowCount = 2
-			};
-			layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-			layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-
-			btnHistoryRefresh = new Button
-			{
-				Text = "Refresh",
-				AutoSize = true,
-				Image = _icons.Get("refresh", 18),
-				TextImageRelation = TextImageRelation.ImageBeforeText,
-				Margin = new Padding(3, 3, 3, 6)
-			};
-			btnHistoryRefresh.Click += async (s, e) => await LoadHistoryAsync();
-
-			var spacer = new Panel { Dock = DockStyle.Fill, Height = btnHistoryRefresh.Height };
-
-			lvHistory = new ListView
-			{
-				Dock = DockStyle.Fill,
-				View = View.Details,
-				FullRowSelect = true,
-				GridLines = true,
-				Font = new Font("Segoe UI", 10f),
-				OwnerDraw = true
-			};
-			lvHistory.Columns.Add("Id", 100);
-			lvHistory.Columns.Add("Script Name", 440);
-			lvHistory.Columns.Add("Applied", 240);
-			lvHistory.Columns.Add("Executed By", 140);
-			lvHistory.Columns.Add("Machine", 180);
-			lvHistory.Columns.Add("Path", 640);
-
-			lvHistory.DrawColumnHeader += (s, e) => e.DrawDefault = true;
-			lvHistory.DrawSubItem += DrawHistorySubItem;
-
-			lvHistory.MouseMove += HistoryMouseMove;
-			lvHistory.MouseLeave += (s, e) => ResetHistoryHover();
-			lvHistory.MouseUp += HistoryMouseUp;
-			lvHistory.ColumnClick += HistoryHeaderClick;
-
-			overlayHistoryPanel = BuildOverlay(out overlayHistoryLabel, out overlayHistoryProgress);
-			lvHistory.Controls.Add(overlayHistoryPanel);
-
-			layout.Controls.Add(spacer, 0, 0);
-			layout.Controls.Add(btnHistoryRefresh, 1, 0);
-			layout.Controls.Add(lvHistory, 0, 1);
-			layout.SetColumnSpan(lvHistory, 2);
-
-			page.Controls.Add(layout);
-			page.Enter += async (s, e) =>
-			{
-				if (lvHistory.Items.Count == 0)
-					await LoadHistoryAsync();
-			};
-
-			return page;
-		}
-
-		private void DrawHistorySubItem(object? sender, DrawListViewSubItemEventArgs e)
-		{
-			if (e.ColumnIndex == 1)
-			{
-				TextRenderer.DrawText(
-					e.Graphics,
-					e.SubItem?.Text,
-					e.SubItem?.Font!,
-					e.Bounds,
-					Color.RoyalBlue,
-					TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
-			}
-			else
-			{
-				e.DrawText(TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
-			}
-		}
-
 		private void HistoryMouseMove(object? sender, MouseEventArgs e)
 		{
 			var hit = lvHistory.HitTest(e.Location);
-			bool onName = hit.Item != null && hit.SubItem != null && hit.Item.SubItems.IndexOf(hit.SubItem) == 1;
+			bool onName = hit.Item != null && hit.SubItem != null &&
+				hit.Item.SubItems.IndexOf(hit.SubItem) == 1 &&
+				hit.Item.Tag is not GroupRowTag; // no hand on group headers
 			if (onName != _historyHandCursor)
 			{
 				_historyHandCursor = onName;
@@ -629,6 +639,7 @@ namespace Scripter.UI.Forms
 			if (e.Button != MouseButtons.Left) return;
 			var hit = lvHistory.HitTest(e.Location);
 			if (hit.Item == null || hit.SubItem == null) return;
+			if (hit.Item.Tag is GroupRowTag) return; // ignore headers
 			if (hit.Item.SubItems.IndexOf(hit.SubItem) != 1) return;
 
 			int id = int.TryParse(hit.Item.SubItems[0].Text, out var v) ? v : 0;
@@ -647,6 +658,9 @@ namespace Scripter.UI.Forms
 
 		private void HistoryHeaderClick(object? sender, ColumnClickEventArgs e)
 		{
+			// Disable sorting when grouping
+			if (_useReleaseGrouping) return;
+
 			if (_historySortColumn == e.Column)
 				_historySortAscending = !_historySortAscending;
 			else
@@ -660,21 +674,21 @@ namespace Scripter.UI.Forms
 		private void SortHistory()
 		{
 			if (_historySortColumn < 0) return;
-			var items = lvHistory.Items.Cast<ListViewItem>().ToList();
+			var items = lvHistory.Items.Cast<ListViewItem>().Where(i => i.Tag is not GroupRowTag).ToList();
 			IEnumerable<ListViewItem> ordered = items;
 
 			switch (_historySortColumn)
 			{
-				case 0: // Id numeric
+				case 0:
 					int GetId(ListViewItem it) => int.TryParse(it.SubItems[0].Text, out var v) ? v : int.MaxValue;
 					ordered = _historySortAscending ? items.OrderBy(GetId) : items.OrderByDescending(GetId);
 					break;
-				case 1: // Script Name
+				case 1:
 					ordered = _historySortAscending
 						? items.OrderBy(i => i.SubItems[1].Text, StringComparer.OrdinalIgnoreCase)
 						: items.OrderByDescending(i => i.SubItems[1].Text, StringComparer.OrdinalIgnoreCase);
 					break;
-				case 2: // Applied date
+				case 2:
 					DateTime GetApplied(ListViewItem it)
 					{
 						var t = it.SubItems[2].Text;
@@ -686,20 +700,36 @@ namespace Scripter.UI.Forms
 						? items.OrderBy(GetApplied).ThenBy(i => i.SubItems[1].Text, StringComparer.OrdinalIgnoreCase)
 						: items.OrderByDescending(GetApplied).ThenByDescending(i => i.SubItems[1].Text, StringComparer.OrdinalIgnoreCase);
 					break;
-				case 3: // Executed By
-				case 4: // Machine
-				case 5: // Path
+				case 3:
+				case 4:
+				case 5:
 					ordered = _historySortAscending
 						? items.OrderBy(i => i.SubItems[_historySortColumn].Text, StringComparer.OrdinalIgnoreCase)
 						: items.OrderByDescending(i => i.SubItems[_historySortColumn].Text, StringComparer.OrdinalIgnoreCase);
 					break;
-				default:
-					return;
 			}
 
 			lvHistory.BeginUpdate();
 			lvHistory.Items.Clear();
-			foreach (var it in ordered) lvHistory.Items.Add(it);
+			foreach (var g in _releaseGroups) // re-insert headers first if grouping
+			{
+				var header = new ListViewItem { Text = "" };
+				header.SubItems.Add(g.Name);
+				header.SubItems.Add("");
+				header.SubItems.Add("");
+				header.SubItems.Add("");
+				header.SubItems.Add("");
+				header.Tag = new GroupRowTag { Group = g, IsHistory = true };
+				lvHistory.Items.Add(header);
+				var gItems = ordered.Where(i =>
+					i.SubItems.Count > 5 &&
+					!string.IsNullOrEmpty(i.SubItems[5].Text) &&
+					i.SubItems[5].Text.StartsWith(g.FullPath, StringComparison.OrdinalIgnoreCase));
+				foreach (var it in gItems) lvHistory.Items.Add(it);
+			}
+			if (!_useReleaseGrouping)
+				foreach (var it in ordered) lvHistory.Items.Add(it);
+
 			lvHistory.EndUpdate();
 		}
 
@@ -711,7 +741,8 @@ namespace Scripter.UI.Forms
 			_hasPendingScripts = false;
 			_scriptsSortColumn = -1;
 
-			if (!Directory.Exists(GetBaseFolder()))
+			var baseFolder = GetBaseFolder();
+			if (!Directory.Exists(baseFolder))
 			{
 				MessageBox.Show("Folder not found.");
 				return;
@@ -723,33 +754,115 @@ namespace Scripter.UI.Forms
 
 			try
 			{
-				var result = await _scriptService.LoadScriptsAsync(GetConnectionString(), GetBaseFolder());
+				var result = await _scriptService.LoadScriptsAsync(GetConnectionString(), baseFolder);
 
-				foreach (var row in result.Executed
-					.OrderBy(r => r.Applied ?? DateTime.MaxValue)
-					.ThenBy(r => r.ScriptName, StringComparer.OrdinalIgnoreCase))
+				// Build release groups from immediate subfolders
+				_releaseGroups = Directory.GetDirectories(baseFolder)
+					.Select(d =>
+					{
+						var info = new DirectoryInfo(d);
+						return new ReleaseGroup
+						{
+							Name = info.Name,
+							FullPath = d,
+							CreatedUtc = info.CreationTimeUtc
+						};
+					})
+					.OrderByDescending(g => g.CreatedUtc)
+					.ToList();
+
+				_useReleaseGrouping = _releaseGroups.Count > 0;
+
+				// Executed scripts assignment
+				foreach (var row in result.Executed)
 				{
+					var grp = _releaseGroups.FirstOrDefault(g =>
+						!string.IsNullOrEmpty(row.Path) &&
+						row.Path.StartsWith(g.FullPath, StringComparison.OrdinalIgnoreCase));
+
 					var item = new ListViewItem { Text = "" };
 					item.SubItems.Add("");
 					item.SubItems.Add(row.ScriptName);
 					item.SubItems.Add(row.Applied?.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "");
 					item.SubItems.Add("Executed");
-					item.Tag = new ScriptRowTag { IsPending = false, Selected = false, FileName = row.ScriptName, Status = "Executed" };
-					lvScripts.Items.Add(item);
+					item.Tag = new ScriptRowTag
+					{
+						IsPending = false,
+						Selected = false,
+						FileName = row.ScriptName,
+						Status = "Executed",
+						FullPath = row.Path ?? "",
+						Group = grp
+					};
+					if (grp != null)
+						grp.ScriptItems.Add(item);
+					else
+						lvScripts.Items.Add(item); // fallback if not in a group
 				}
 
-				foreach (var file in result.PendingFiles)
+				// Pending scripts: locate inside each group (supports duplicates)
+				foreach (var fileName in result.PendingFiles)
 				{
-					var item = new ListViewItem { Text = "" };
-					item.SubItems.Add("");
-					item.SubItems.Add(file);
-					item.SubItems.Add("");
-					item.SubItems.Add("Pending");
-					item.Tag = new ScriptRowTag { IsPending = true, Selected = false, FileName = file, Status = "Pending" };
-					lvScripts.Items.Add(item);
+					foreach (var grp in _releaseGroups)
+					{
+						var found = Directory.GetFiles(grp.FullPath, fileName, SearchOption.AllDirectories);
+						foreach (var f in found)
+						{
+							var item = new ListViewItem { Text = "" };
+							item.SubItems.Add("");
+							item.SubItems.Add(fileName);
+							item.SubItems.Add("");
+							item.SubItems.Add("Pending");
+							item.Tag = new ScriptRowTag
+							{
+								IsPending = true,
+								Selected = false,
+								FileName = fileName,
+								Status = "Pending",
+								FullPath = f,
+								Group = grp
+							};
+							grp.ScriptItems.Add(item);
+							_hasPendingScripts = true;
+							break; // only first match per group
+						}
+					}
 				}
 
-				_hasPendingScripts = result.PendingFiles.Count > 0;
+				lvScripts.BeginUpdate();
+				if (_useReleaseGrouping)
+				{
+					foreach (var grp in _releaseGroups)
+					{
+						if (grp.ScriptItems.Count == 0) continue;
+						var header = new ListViewItem { Text = "" };
+						header.SubItems.Add(""); // icon col
+						header.SubItems.Add(grp.Name);
+						header.SubItems.Add(""); // applied
+						header.SubItems.Add(""); // status
+						header.Tag = new GroupRowTag { Group = grp, IsHistory = false };
+						lvScripts.Items.Add(header);
+						foreach (var it in grp.ScriptItems)
+							lvScripts.Items.Add(it);
+					}
+				}
+				else
+				{
+					// No grouping: add any non-group items (already added executed)
+					foreach (var fileName in result.PendingFiles)
+					{
+						var item = new ListViewItem { Text = "" };
+						item.SubItems.Add("");
+						item.SubItems.Add(fileName);
+						item.SubItems.Add("");
+						item.SubItems.Add("Pending");
+						item.Tag = new ScriptRowTag { IsPending = true, Selected = false, FileName = fileName, Status = "Pending" };
+						lvScripts.Items.Add(item);
+						_hasPendingScripts = true;
+					}
+				}
+				lvScripts.EndUpdate();
+
 				btnRun.Enabled = _hasPendingScripts;
 				SetStatus(result.Executed.Count, result.PendingFiles.Count);
 
@@ -791,7 +904,7 @@ namespace Scripter.UI.Forms
 			if (selected.Count > 20)
 				previewList += Environment.NewLine + $"... (+{selected.Count - 20} more)";
 			string confirmMsg =
-				"Are you sure you want to rexecute un the selected scripts?" +
+				"Are you sure you want to execute the selected scripts?" +
 				Environment.NewLine + Environment.NewLine + previewList;
 
 			var answer = MessageBox.Show(
@@ -849,7 +962,7 @@ namespace Scripter.UI.Forms
 			var list = new List<string>();
 			foreach (ListViewItem it in lvScripts.Items)
 				if (it.Tag is ScriptRowTag tag && tag.IsPending && tag.Selected)
-					list.Add(tag.FileName);
+					list.Add(tag.FileName); // service expects file names
 			return list;
 		}
 
@@ -862,16 +975,72 @@ namespace Scripter.UI.Forms
 			try
 			{
 				var rows = await _repository.GetHistoryAsync();
-				foreach (var row in rows)
+
+				// Build groups for history (same logic)
+				var baseFolder = GetBaseFolder();
+				var groups = Directory.Exists(baseFolder)
+					? Directory.GetDirectories(baseFolder)
+						.Select(d =>
+						{
+							var info = new DirectoryInfo(d);
+							return new ReleaseGroup
+							{
+								Name = info.Name,
+								FullPath = d,
+								CreatedUtc = info.CreationTimeUtc
+							};
+						})
+						.OrderByDescending(g => g.CreatedUtc)
+						.ToList()
+					: new List<ReleaseGroup>();
+
+				_useReleaseGrouping = groups.Count > 0;
+				_releaseGroups = groups; // reuse for header retention in sorting
+
+				lvHistory.BeginUpdate();
+				if (_useReleaseGrouping)
 				{
-					var it = new ListViewItem { Text = row.Id, UseItemStyleForSubItems = false };
-					it.SubItems.Add(row.Script);
-					it.SubItems.Add(row.AppliedUtc == DateTime.MinValue ? "" : row.AppliedUtc.ToString("yyyy-MM-dd HH:mm:ss"));
-					it.SubItems.Add(row.By ?? "");
-					it.SubItems.Add(row.Machine ?? "");
-					it.SubItems.Add(row.Path ?? "");
-					lvHistory.Items.Add(it);
+					foreach (var grp in groups)
+					{
+						var header = new ListViewItem { Text = "" };
+						header.SubItems.Add(grp.Name);
+						header.SubItems.Add("");
+						header.SubItems.Add("");
+						header.SubItems.Add("");
+						header.SubItems.Add("");
+						header.Tag = new GroupRowTag { Group = grp, IsHistory = true };
+						lvHistory.Items.Add(header);
+
+						var grpRows = rows.Where(r =>
+							!string.IsNullOrEmpty(r.Path) &&
+							r.Path.StartsWith(grp.FullPath, StringComparison.OrdinalIgnoreCase));
+
+						foreach (var r in grpRows)
+						{
+							var it = new ListViewItem { Text = r.Id, UseItemStyleForSubItems = false };
+							it.SubItems.Add(r.Script);
+							it.SubItems.Add(r.AppliedUtc == DateTime.MinValue ? "" : r.AppliedUtc.ToString("yyyy-MM-dd HH:mm:ss"));
+							it.SubItems.Add(r.By ?? "");
+							it.SubItems.Add(r.Machine ?? "");
+							it.SubItems.Add(r.Path ?? "");
+							lvHistory.Items.Add(it);
+						}
+					}
 				}
+				else
+				{
+					foreach (var row in rows)
+					{
+						var it = new ListViewItem { Text = row.Id, UseItemStyleForSubItems = false };
+						it.SubItems.Add(row.Script);
+						it.SubItems.Add(row.AppliedUtc == DateTime.MinValue ? "" : row.AppliedUtc.ToString("yyyy-MM-dd HH:mm:ss"));
+						it.SubItems.Add(row.By ?? "");
+						it.SubItems.Add(row.Machine ?? "");
+						it.SubItems.Add(row.Path ?? "");
+						lvHistory.Items.Add(it);
+					}
+				}
+				lvHistory.EndUpdate();
 			}
 			catch (Exception ex)
 			{
@@ -881,6 +1050,33 @@ namespace Scripter.UI.Forms
 			{
 				HideHistoryLoader();
 			}
+		}
+
+		private void UpdateGroupHeaderCheckStates()
+		{
+			foreach (var grp in _releaseGroups)
+			{
+				var pending = grp.ScriptItems.Where(i => i.Tag is ScriptRowTag t && t.IsPending).ToList();
+				if (pending.Count == 0)
+				{
+					grp.HeaderChecked = false;
+					continue;
+				}
+				grp.HeaderChecked = pending.All(i => ((ScriptRowTag)i.Tag!).Selected);
+			}
+		}
+		private void UpdateGlobalSelectAllFlag()
+		{
+			var pending = lvScripts.Items
+				.Cast<ListViewItem>()
+				.Where(i => i.Tag is ScriptRowTag t && t.IsPending)
+				.ToList();
+			if (pending.Count == 0)
+			{
+				_scriptsSelectAll = false;
+				return;
+			}
+			_scriptsSelectAll = pending.All(i => ((ScriptRowTag)i.Tag!).Selected);
 		}
 
 		private void ShowError(string title, Exception ex, string? prefix = null)
@@ -1002,12 +1198,12 @@ namespace Scripter.UI.Forms
 				if (it.Tag is ScriptRowTag tag && tag.IsPending)
 					tag.Selected = _scriptsSelectAll;
 			}
-			lvScripts.Invalidate(); // redraw header + checkboxes
+			UpdateGroupHeaderCheckStates();
+			lvScripts.Invalidate();
 		}
 
 		private async void MainForm_KeyDown(object? sender, KeyEventArgs e)
 		{
-			// Esc: close
 			if (e.KeyCode == Keys.Escape)
 			{
 				e.SuppressKeyPress = true;
@@ -1015,7 +1211,6 @@ namespace Scripter.UI.Forms
 				return;
 			}
 
-			// Ctrl+A: toggle select/unselect all pending scripts (Scripts tab only)
 			if (e.Control && e.KeyCode == Keys.A)
 			{
 				bool scriptsTabActive = _tabs.SelectedTab != null &&
@@ -1027,8 +1222,6 @@ namespace Scripter.UI.Forms
 					return;
 				}
 			}
-
-			// Ctrl+B: browse for folder
 			if (e.Control && e.KeyCode == Keys.B)
 			{
 				e.SuppressKeyPress = true;
@@ -1036,8 +1229,6 @@ namespace Scripter.UI.Forms
 					btnBrowse.PerformClick();
 				return;
 			}
-
-			// Ctrl+L: load scripts
 			if (e.Control && e.KeyCode == Keys.L)
 			{
 				e.SuppressKeyPress = true;
@@ -1045,8 +1236,6 @@ namespace Scripter.UI.Forms
 					await LoadScriptsAsync(true);
 				return;
 			}
-
-			// Ctrl+R: run pending
 			if (e.Control && e.KeyCode == Keys.R)
 			{
 				e.SuppressKeyPress = true;
@@ -1054,8 +1243,6 @@ namespace Scripter.UI.Forms
 					await RunPendingAsync();
 				return;
 			}
-
-			// Ctrl+T: test DB connection
 			if (e.Control && e.KeyCode == Keys.T)
 			{
 				e.SuppressKeyPress = true;
@@ -1114,6 +1301,118 @@ namespace Scripter.UI.Forms
 				HideScriptsLoader();
 				btnTestDb.Enabled = true;
 			}
+		}
+
+		private void ScriptsHeaderClick(object? sender, ColumnClickEventArgs e)
+		{
+			// Grouped mode: column 0 toggles select-all for pending scripts in all groups
+			if (_useReleaseGrouping)
+			{
+				if (e.Column == 0)
+				{
+					if (!_hasPendingScripts) return;
+					_scriptsSelectAll = !_scriptsSelectAll;
+					foreach (ListViewItem it in lvScripts.Items)
+						if (it.Tag is ScriptRowTag tag && tag.IsPending)
+							tag.Selected = _scriptsSelectAll;
+					UpdateGroupHeaderCheckStates();
+					lvScripts.Invalidate();
+				}
+				return;
+			}
+
+			// Ungrouped: column 0 checkbox acts as select-all; column 1 (icon) ignored; sort 2..4
+			if (e.Column == 0)
+			{
+				if (!_hasPendingScripts) return;
+				_scriptsSelectAll = !_scriptsSelectAll;
+				foreach (ListViewItem it in lvScripts.Items)
+					if (it.Tag is ScriptRowTag tag && tag.IsPending)
+						tag.Selected = _scriptsSelectAll;
+				lvScripts.Invalidate();
+				return;
+			}
+			if (e.Column == 1) return;
+
+			if (_scriptsSortColumn == e.Column)
+				_scriptsSortAscending = !_scriptsSortAscending;
+			else
+			{
+				_scriptsSortColumn = e.Column;
+				_scriptsSortAscending = true;
+			}
+			SortScripts();
+		}
+
+		private void SortScripts()
+		{
+			if (_scriptsSortColumn < 0) return;
+
+			// Skip group headers when sorting (preserve grouping order)
+			var items = lvScripts.Items.Cast<ListViewItem>()
+				.Where(i => i.Tag is ScriptRowTag)
+				.ToList();
+
+			IEnumerable<ListViewItem> ordered = items;
+			switch (_scriptsSortColumn)
+			{
+				case 2: // Script Name
+					ordered = _scriptsSortAscending
+						? items.OrderBy(i => i.SubItems[2].Text, StringComparer.OrdinalIgnoreCase)
+						: items.OrderByDescending(i => i.SubItems[2].Text, StringComparer.OrdinalIgnoreCase);
+					break;
+				case 3: // Applied
+					DateTime GetApplied(ListViewItem it)
+					{
+						var t = it.SubItems[3].Text;
+						if (string.IsNullOrWhiteSpace(t)) return DateTime.MaxValue;
+						return DateTime.TryParse(t, out var dt) ? dt : DateTime.MaxValue;
+					}
+					ordered = _scriptsSortAscending
+						? items.OrderBy(GetApplied).ThenBy(i => i.SubItems[2].Text, StringComparer.OrdinalIgnoreCase)
+						: items.OrderByDescending(GetApplied).ThenByDescending(i => i.SubItems[2].Text, StringComparer.OrdinalIgnoreCase);
+					break;
+				case 4: // Status rank
+					int Rank(ListViewItem it) => it.SubItems[4].Text.ToLowerInvariant() switch
+					{
+						"executed" => 0,
+						"pending" => 1,
+						"error" => 2,
+						_ => 99
+					};
+					ordered = _scriptsSortAscending
+						? items.OrderBy(Rank).ThenBy(i => i.SubItems[2].Text, StringComparer.OrdinalIgnoreCase)
+						: items.OrderByDescending(Rank).ThenByDescending(i => i.SubItems[2].Text, StringComparer.OrdinalIgnoreCase);
+					break;
+			}
+
+			lvScripts.BeginUpdate();
+			lvScripts.Items.Clear();
+
+			if (_useReleaseGrouping)
+			{
+				// Rebuild grouped view preserving group header order (newest first)
+				foreach (var grp in _releaseGroups)
+				{
+					var header = new ListViewItem { Text = "" };
+					header.SubItems.Add("");
+					header.SubItems.Add(grp.Name);
+					header.SubItems.Add("");
+					header.SubItems.Add("");
+					header.Tag = new GroupRowTag { Group = grp, IsHistory = false };
+					lvScripts.Items.Add(header);
+
+					var groupItems = ordered.Where(i => (i.Tag as ScriptRowTag)?.Group == grp);
+					foreach (var it in groupItems) lvScripts.Items.Add(it);
+				}
+			}
+			else
+			{
+				foreach (var it in ordered) lvScripts.Items.Add(it);
+			}
+
+			lvScripts.EndUpdate();
+			lvScripts.Invalidate();
 		}
 	}
 }
