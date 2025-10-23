@@ -1414,5 +1414,30 @@ namespace Scripter.UI.Forms
 			lvScripts.EndUpdate();
 			lvScripts.Invalidate();
 		}
+
+		protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+		{
+			// Cycle forward with Tab, backward with Shift+Tab between Scripts / History
+			if (keyData == Keys.Tab)
+			{
+				SwitchTab(+1);
+				return true; // consume
+			}
+			if (keyData == (Keys.Shift | Keys.Tab))
+			{
+				SwitchTab(-1);
+				return true; // consume
+			}
+			return base.ProcessCmdKey(ref msg, keyData);
+		}
+
+		private void SwitchTab(int delta)
+		{
+			if (_tabs == null || _tabs.TabPages.Count == 0) return;
+			int idx = _tabs.SelectedIndex;
+			idx = (idx + delta) % _tabs.TabPages.Count;
+			if (idx < 0) idx += _tabs.TabPages.Count;
+			_tabs.SelectedIndex = idx;
+		}
 	}
 }
